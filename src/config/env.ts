@@ -24,6 +24,7 @@ export const env = {
   CORS_ORIGIN: optional('CORS_ORIGIN', 'http://localhost:3000'),
   RATE_LIMIT_WINDOW_MS: parseInt(optional('RATE_LIMIT_WINDOW_MS', '900000'), 10),
   RATE_LIMIT_MAX: parseInt(optional('RATE_LIMIT_MAX', '100'), 10),
+  ENCRYPTION_KEY: required('ENCRYPTION_KEY'),
   isDev: () => env.NODE_ENV === 'development',
   isProd: () => env.NODE_ENV === 'production',
 } as const;
