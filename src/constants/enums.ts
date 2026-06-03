@@ -57,3 +57,63 @@ export type EmployeeStatus = (typeof EMPLOYEE_STATUSES)[number];
 
 export const WORK_STATUSES = ['in_progress', 'completed', 'blocked'] as const;
 export type WorkStatus = (typeof WORK_STATUSES)[number];
+
+export const REVENUE_TYPES = ['one_time', 'recurring', 'milestone'] as const;
+export type RevenueType = (typeof REVENUE_TYPES)[number];
+
+export const REVENUE_STATUSES = ['pending', 'partial', 'received', 'overdue'] as const;
+export type RevenueStatus = (typeof REVENUE_STATUSES)[number];
+
+export const PAYMENT_METHODS = ['bank_transfer', 'upi', 'cash', 'cheque', 'card', 'online'] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+export const SALARY_STATUSES = ['pending', 'paid', 'on_hold'] as const;
+export type SalaryStatus = (typeof SALARY_STATUSES)[number];
+
+export const SALARY_PAYMENT_MODES = ['bank_transfer', 'upi', 'cash', 'cheque'] as const;
+export type SalaryPaymentMode = (typeof SALARY_PAYMENT_MODES)[number];
+
+export const REIMBURSEMENT_STATUSES = [
+  'submitted',
+  'under_review',
+  'approved',
+  'rejected',
+  'paid',
+] as const;
+export type ReimbursementStatus = (typeof REIMBURSEMENT_STATUSES)[number];
+
+export const REIMBURSEMENT_CATEGORIES = [
+  'travel',
+  'meals',
+  'office_supplies',
+  'software',
+  'client_entertainment',
+  'other',
+] as const;
+export type ReimbursementCategory = (typeof REIMBURSEMENT_CATEGORIES)[number];
+
+export const REPORT_TYPES = [
+  'monthly_seo',
+  'analytics',
+  'campaign',
+  'audit',
+  'other',
+] as const;
+export type ReportType = (typeof REPORT_TYPES)[number];
+
+export const SUBSCRIPTION_STATUSES = [
+  'active',
+  'expiring_soon',
+  'expired',
+  'cancelled',
+] as const;
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
+
+export const BILLING_CYCLES = ['monthly', 'quarterly', 'annual'] as const;
+export type BillingCycle = (typeof BILLING_CYCLES)[number];
+
+export const UPCOMING_PAYMENT_TYPES = ['confirmed', 'expected'] as const;
+export type UpcomingPaymentType = (typeof UPCOMING_PAYMENT_TYPES)[number];
+
+export const UPCOMING_PAYMENT_STATUSES = ['pending', 'received', 'overdue', 'cancelled'] as const;
+export type UpcomingPaymentStatus = (typeof UPCOMING_PAYMENT_STATUSES)[number];

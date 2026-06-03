@@ -16,15 +16,42 @@ const systemRoleDescriptions: Record<string, string> = {
 export async function seedSystemRoles(): Promise<void> {
   for (const roleName of Object.values(SYSTEM_ROLES)) {
     const existing = await Role.findOne({ name: roleName });
-    if (existing) continue;
 
-    await Role.create({
-      name: roleName,
-      description: systemRoleDescriptions[roleName] ?? '',
-      is_system: true,
-      permissions: DEFAULT_ROLE_PERMISSIONS[roleName] ?? {},
-    });
+    if (!existing) {
+      await Role.create({
+        name: roleName,
+        description: systemRoleDescriptions[roleName] ?? '',
+        is_system: true,
+        permissions: DEFAULT_ROLE_PERMISSIONS[roleName] ?? {},
+      });
+      logger.info(`Seeded system role: ${roleName}`);
+      continue;
+    }
 
-    logger.info(`Seeded system role: ${roleName}`);
+    // Sync permissions from defaults — adds missing modules and updates changed ones
+    const defaults = DEFAULT_ROLE_PERMISSIONS[roleName] ?? {};
+    const current = (existing.permissions ?? {}) as Record<string, unknown>;
+    const toSync: Record<string, unknown> = {};
+
+    for (const [module, perms] of Object.entries(defaults)) {
+      const cur = current[module] as Record<string, boolean> | undefined;
+      const def = perms as Record<string, boolean>;
+      const changed =
+        !cur ||
+        cur.read !== def.read ||
+        cur.create !== def.create ||
+        cur.update !== def.update ||
+        cur.delete !== def.delete;
+
+      if (changed) toSync[module] = perms;
+    }
+
+    if (Object.keys(toSync).length > 0) {
+      await Role.updateOne(
+        { _id: existing._id },
+        { $set: Object.fromEntries(Object.entries(toSync).map(([m, p]) => [`permissions.${m}`, p])) }
+      );
+      logger.info(`Synced permissions for role: ${roleName} → updated: ${Object.keys(toSync).join(', ')}`);
+    }
   }
 }

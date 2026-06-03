@@ -29,6 +29,5 @@ const employeeSchema = new Schema<IEmployee>(
 );
 
 employeeSchema.index({ status: 1, department: 1 });
-employeeSchema.index({ user_id: 1 });
 
 export const Employee = model<IEmployee>('Employee', employeeSchema);

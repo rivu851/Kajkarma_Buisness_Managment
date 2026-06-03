@@ -13,6 +13,7 @@ import {
   communicationListScope,
   hasFullRecordAccess,
   toObjectId,
+  resolveId,
 } from '../utils/recordScope.js';
 import { SYSTEM_ROLES } from '../constants/roles.js';
 import type { ICommunication } from '../types/business.js';
@@ -31,7 +32,7 @@ async function assertEntityAccess(
     if (!lead) throw new AppError('Lead not found', 404);
     if (
       user.roleName === SYSTEM_ROLES.SALES_EXECUTIVE &&
-      lead.assigned_user_id?.toString() !== user.userId
+      resolveId(lead.assigned_user_id) !== user.userId
     ) {
       throw new AppError('Access denied to this lead', 403);
     }
@@ -40,7 +41,7 @@ async function assertEntityAccess(
     if (!client) throw new AppError('Client not found', 404);
     if (
       user.roleName === SYSTEM_ROLES.SALES_EXECUTIVE &&
-      client.assigned_manager_id?.toString() !== user.userId
+      resolveId(client.assigned_manager_id) !== user.userId
     ) {
       throw new AppError('Access denied to this client', 403);
     }
@@ -50,7 +51,7 @@ async function assertEntityAccess(
 function assertCommunicationRecordAccess(comm: ICommunication, user: JwtPayload): void {
   if (hasFullRecordAccess(user)) return;
   if (user.roleName === SYSTEM_ROLES.SALES_EXECUTIVE) {
-    if (comm.user_id.toString() !== user.userId) {
+    if (resolveId(comm.user_id) !== user.userId) {
       throw new AppError('Access denied to this communication', 403);
     }
   }

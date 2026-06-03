@@ -81,6 +81,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, RolePermissions> = {
     clients: { read: true, create: true, update: true, delete: false },
     communications: FULL,
     reminders: FULL,
+    projects: READ_ONLY,
+    worklogs: { read: true, create: true, update: true, delete: false },
     dashboard: READ_ONLY,
     users: NO_ACCESS,
     roles: NO_ACCESS,
@@ -91,7 +93,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, RolePermissions> = {
 
   project_manager: {
     projects: FULL,
-    worklogs: READ_ONLY,
+    employees: READ_ONLY,
+    worklogs: { read: true, create: true, update: true, delete: false },
     reports: FULL,
     reminders: FULL,
     clients: READ_ONLY,

@@ -9,7 +9,7 @@ import { findLeadById } from '../repositories/lead.repository.js';
 import { findUserById } from '../repositories/user.repository.js';
 import { AppError } from '../utils/AppError.js';
 import { omitUndefined } from '../utils/omitUndefined.js';
-import { clientListScope, hasFullRecordAccess, toObjectId } from '../utils/recordScope.js';
+import { clientListScope, hasFullRecordAccess, toObjectId, resolveId } from '../utils/recordScope.js';
 import { SYSTEM_ROLES } from '../constants/roles.js';
 import type { IClient } from '../types/business.js';
 import type { JwtPayload, PaginatedResult } from '../types/index.js';
@@ -17,8 +17,7 @@ import type { JwtPayload, PaginatedResult } from '../types/index.js';
 function assertClientRecordAccess(client: IClient, user: JwtPayload): void {
   if (hasFullRecordAccess(user)) return;
   if (user.roleName === SYSTEM_ROLES.SALES_EXECUTIVE) {
-    const manager = client.assigned_manager_id?.toString();
-    if (manager !== user.userId) {
+    if (resolveId(client.assigned_manager_id) !== user.userId) {
       throw new AppError('Access denied to this client', 403);
     }
   }

@@ -84,6 +84,14 @@ export async function listEmployees(
   };
 }
 
+export async function getMyEmployeeProfile(
+  user: JwtPayload
+): Promise<Record<string, unknown>> {
+  const employee = await findEmployeeByUserId(user.userId);
+  if (!employee) throw new AppError('No employee profile linked to your account', 404);
+  return formatEmployeeForUser(employee, user);
+}
+
 export async function getEmployeeById(
   id: string,
   user: JwtPayload

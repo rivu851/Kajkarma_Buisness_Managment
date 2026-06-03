@@ -11,6 +11,18 @@ import type {
   PaymentStatus,
   EmployeeStatus,
   WorkStatus,
+  RevenueType,
+  RevenueStatus,
+  PaymentMethod,
+  SalaryStatus,
+  SalaryPaymentMode,
+  ReimbursementStatus,
+  ReimbursementCategory,
+  ReportType,
+  SubscriptionStatus,
+  BillingCycle,
+  UpcomingPaymentType,
+  UpcomingPaymentStatus,
 } from '../constants/enums.js';
 
 export interface ILeadHistoryEntry {
@@ -131,6 +143,123 @@ export interface IWorklog {
   time_spent_hours: number;
   work_status: WorkStatus;
   remarks?: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface IRevenue {
+  _id: Types.ObjectId;
+  client_id: Types.ObjectId;
+  project_id?: Types.ObjectId;
+  title: string;
+  amount: number;
+  received_amount: number;
+  due_date?: Date;
+  revenue_date: Date;
+  type: RevenueType;
+  status: RevenueStatus;
+  notes?: string;
+  created_by: Types.ObjectId;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface IPayment {
+  _id: Types.ObjectId;
+  revenue_id: Types.ObjectId;
+  client_id: Types.ObjectId;
+  project_id?: Types.ObjectId;
+  amount: number;
+  payment_date: Date;
+  payment_method: PaymentMethod;
+  reference_number?: string;
+  notes?: string;
+  created_by: Types.ObjectId;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface ISalary {
+  _id: Types.ObjectId;
+  employee_id: Types.ObjectId;
+  month: number;
+  year: number;
+  base_salary: number;
+  bonus: number;
+  deductions: number;
+  net_salary: number;
+  payment_mode?: SalaryPaymentMode;
+  payment_date?: Date;
+  status: SalaryStatus;
+  notes?: string;
+  paid_by?: Types.ObjectId;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface IReimbursement {
+  _id: Types.ObjectId;
+  employee_id: Types.ObjectId;
+  expense_title: string;
+  amount: number;
+  expense_date: Date;
+  reason: string;
+  category: ReimbursementCategory;
+  project_id?: Types.ObjectId;
+  client_id?: Types.ObjectId;
+  bill_attachment_url?: string;
+  status: ReimbursementStatus;
+  approved_by?: Types.ObjectId;
+  approval_date?: Date;
+  paid_date?: Date;
+  notes?: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface IReport {
+  _id: Types.ObjectId;
+  client_id: Types.ObjectId;
+  project_id?: Types.ObjectId;
+  report_title: string;
+  report_type: ReportType;
+  month: Date;
+  file_url: string;
+  uploaded_by: Types.ObjectId;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface IUpcomingPayment {
+  _id: Types.ObjectId;
+  client_id: Types.ObjectId;
+  project_id?: Types.ObjectId;
+  revenue_id?: Types.ObjectId;
+  amount: number;
+  due_date: Date;
+  payment_type: UpcomingPaymentType;
+  payment_status: UpcomingPaymentStatus;
+  reminder_date?: Date;
+  assigned_follow_up_user?: Types.ObjectId;
+  notes?: string;
+  created_by: Types.ObjectId;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface ISubscription {
+  _id: Types.ObjectId;
+  plan_name: string;
+  provider: string;
+  start_date: Date;
+  end_date: Date;
+  renewal_date: Date;
+  amount: number;
+  billing_cycle: BillingCycle;
+  status: SubscriptionStatus;
+  assigned_to?: string;
+  notes?: string;
+  created_by: Types.ObjectId;
   created_at: Date;
   updated_at: Date;
 }

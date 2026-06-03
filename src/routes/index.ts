@@ -8,6 +8,13 @@ import communicationRoutes from './communications.routes.js';
 import projectRoutes from './projects.routes.js';
 import employeeRoutes from './employees.routes.js';
 import worklogRoutes from './worklogs.routes.js';
+import revenueRoutes from './revenues.routes.js';
+import paymentRoutes from './payments.routes.js';
+import salaryRoutes from './salaries.routes.js';
+import reimbursementRoutes from './reimbursements.routes.js';
+import reportRoutes from './reports.routes.js';
+import subscriptionRoutes from './subscriptions.routes.js';
+import upcomingPaymentRoutes from './upcoming_payments.routes.js';
 
 const router = Router();
 
@@ -20,5 +27,12 @@ router.use('/communications', communicationRoutes);
 router.use('/projects', projectRoutes);
 router.use('/employees', employeeRoutes);
 router.use('/worklogs', worklogRoutes);
+router.use('/revenues', revenueRoutes);
+router.use('/payments', paymentRoutes);
+router.use('/salaries', salaryRoutes);
+router.use('/reimbursements', reimbursementRoutes);
+router.use('/reports', reportRoutes);
+router.use('/subscriptions', subscriptionRoutes);
+router.use('/upcoming-payments', upcomingPaymentRoutes);
 
 export default router;

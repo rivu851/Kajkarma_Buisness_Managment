@@ -11,7 +11,7 @@ import { createClient } from '../repositories/client.repository.js';
 import { findUserById } from '../repositories/user.repository.js';
 import { AppError } from '../utils/AppError.js';
 import { omitUndefined } from '../utils/omitUndefined.js';
-import { leadListScope, hasFullRecordAccess, toObjectId } from '../utils/recordScope.js';
+import { leadListScope, hasFullRecordAccess, toObjectId, resolveId } from '../utils/recordScope.js';
 import { SYSTEM_ROLES } from '../constants/roles.js';
 import type { ILead } from '../types/business.js';
 import type { JwtPayload, PaginatedResult } from '../types/index.js';
@@ -20,8 +20,7 @@ import type { LeadStage } from '../constants/enums.js';
 function assertLeadRecordAccess(lead: ILead, user: JwtPayload): void {
   if (hasFullRecordAccess(user)) return;
   if (user.roleName === SYSTEM_ROLES.SALES_EXECUTIVE) {
-    const assigned = lead.assigned_user_id?.toString();
-    if (assigned !== user.userId) {
+    if (resolveId(lead.assigned_user_id) !== user.userId) {
       throw new AppError('Access denied to this lead', 403);
     }
   }

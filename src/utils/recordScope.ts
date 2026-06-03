@@ -73,6 +73,15 @@ export function worklogListScope(
   return { employee_id: toObjectId('000000000000000000000000') };
 }
 
+// Handles both populated objects { _id, name } and raw ObjectId after .lean()
+export function resolveId(field: unknown): string {
+  if (!field) return '';
+  if (typeof field === 'object' && '_id' in (field as object)) {
+    return String((field as { _id: unknown })._id);
+  }
+  return String(field);
+}
+
 export function canViewSensitiveEmployeeData(user: JwtPayload): boolean {
   return (
     user.roleName === SYSTEM_ROLES.SUPER_ADMIN ||

@@ -18,6 +18,11 @@ export const getEmployees: RequestHandler = asyncHandler(async (req, res: Respon
   sendSuccess(res, result, 'Employees retrieved');
 });
 
+export const getMyEmployee: RequestHandler = asyncHandler(async (req, res: Response) => {
+  const employee = await employeeService.getMyEmployeeProfile(req.user!);
+  sendSuccess(res, employee, 'Employee profile retrieved');
+});
+
 export const getEmployee: RequestHandler = asyncHandler(async (req, res: Response) => {
   const employee = await employeeService.getEmployeeById(param(req, 'id'), req.user!);
   sendSuccess(res, employee, 'Employee retrieved');

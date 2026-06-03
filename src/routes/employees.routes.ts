@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getEmployees,
   getEmployee,
+  getMyEmployee,
   createEmployee,
   updateEmployeeHandler,
   deleteEmployee,
@@ -21,6 +22,7 @@ router.use(authenticate);
 
 router.get('/', requirePermission('employees', 'read'), validate(listEmployeesSchema), getEmployees);
 router.post('/', requirePermission('employees', 'create'), validate(createEmployeeSchema), createEmployee);
+router.get('/me', getMyEmployee);
 router.get('/:id', requirePermission('employees', 'read'), getEmployee);
 router.patch(
   '/:id',
