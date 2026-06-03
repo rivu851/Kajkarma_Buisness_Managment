@@ -117,3 +117,48 @@ export type UpcomingPaymentType = (typeof UPCOMING_PAYMENT_TYPES)[number];
 
 export const UPCOMING_PAYMENT_STATUSES = ['pending', 'received', 'overdue', 'cancelled'] as const;
 export type UpcomingPaymentStatus = (typeof UPCOMING_PAYMENT_STATUSES)[number];
+
+export const REMINDER_TYPES = [
+  'lead_followup',
+  'client_payment',
+  'project_deadline',
+  'salary_due',
+  'report_upload',
+  'subscription_renewal',
+  'reimbursement_review',
+  'communication_followup',
+  'custom',
+] as const;
+export type ReminderType = (typeof REMINDER_TYPES)[number];
+
+export const REMINDER_STATUSES = [
+  'pending',
+  'done',
+  'snoozed',
+  'rescheduled',
+  'cancelled',
+] as const;
+export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
+
+export const REMINDER_PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
+export type ReminderPriority = (typeof REMINDER_PRIORITIES)[number];
+
+export const REMINDER_MODULES = [
+  'leads',
+  'clients',
+  'projects',
+  'employees',
+  'worklogs',
+  'revenue',
+  'upcoming-payments',
+  'salary',
+  'reimbursements',
+  'reports',
+  'subscriptions',
+  'communications',
+  'dashboard',
+] as const;
+export type ReminderModule = (typeof REMINDER_MODULES)[number];
+
+export const NOTIFICATION_CHANNELS = ['in_app', 'email', 'whatsapp', 'push'] as const;
+export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];

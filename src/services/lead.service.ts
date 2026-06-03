@@ -99,7 +99,18 @@ export async function createNewLead(
     ],
   } as Partial<ILead>);
 
-  return (await findLeadById(lead._id))!;
+  const saved = (await findLeadById(lead._id))!;
+  if (saved.follow_up_date && saved.assigned_user_id) {
+    const { onLeadFollowUpChanged } = await import('./reminder.service.js');
+    void onLeadFollowUpChanged(
+      saved._id as import('mongoose').Types.ObjectId,
+      saved.lead_name,
+      saved.follow_up_date,
+      saved.assigned_user_id as import('mongoose').Types.ObjectId,
+      toObjectId(user.userId)
+    ).catch(() => undefined);
+  }
+  return saved;
 }
 
 export async function updateLead(
@@ -113,6 +124,19 @@ export async function updateLead(
 
   const updated = await updateLeadById(id, data);
   if (!updated) throw new AppError('Lead not found', 404);
+  if (updated.stage === 'won' || updated.stage === 'lost') {
+    const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+    void closePendingRemindersForRecord('leads', toObjectId(id)).catch(() => undefined);
+  } else if (updated.follow_up_date && updated.assigned_user_id) {
+    const { onLeadFollowUpChanged } = await import('./reminder.service.js');
+    void onLeadFollowUpChanged(
+      updated._id as import('mongoose').Types.ObjectId,
+      updated.lead_name,
+      updated.follow_up_date,
+      updated.assigned_user_id as import('mongoose').Types.ObjectId,
+      toObjectId(user.userId)
+    ).catch(() => undefined);
+  }
   return updated;
 }
 
@@ -135,6 +159,10 @@ export async function changeLeadStage(
 
   const updated = await updateLeadById(id, { stage });
   if (!updated) throw new AppError('Lead not found', 404);
+  if (stage === 'won' || stage === 'lost') {
+    const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+    void closePendingRemindersForRecord('leads', toObjectId(id)).catch(() => undefined);
+  }
   return updated;
 }
 

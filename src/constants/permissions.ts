@@ -120,6 +120,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, RolePermissions> = {
     salary: FULL,
     reimbursements: FULL,
     subscriptions: FULL,
+    reminders: FULL,
     dashboard: READ_ONLY,
     employees: READ_ONLY,
     roles: NO_ACCESS,

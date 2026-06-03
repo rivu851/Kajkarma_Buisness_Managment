@@ -15,6 +15,8 @@ import reimbursementRoutes from './reimbursements.routes.js';
 import reportRoutes from './reports.routes.js';
 import subscriptionRoutes from './subscriptions.routes.js';
 import upcomingPaymentRoutes from './upcoming_payments.routes.js';
+import dashboardRoutes from './dashboard.routes.js';
+import reminderRoutes from './reminder.routes.js';
 
 const router = Router();
 
@@ -34,5 +36,7 @@ router.use('/reimbursements', reimbursementRoutes);
 router.use('/reports', reportRoutes);
 router.use('/subscriptions', subscriptionRoutes);
 router.use('/upcoming-payments', upcomingPaymentRoutes);
+router.use('/dashboard', dashboardRoutes);
+router.use('/reminders', reminderRoutes);
 
 export default router;

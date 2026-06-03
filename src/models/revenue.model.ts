@@ -25,5 +25,6 @@ const revenueSchema = new Schema<IRevenue>(
 revenueSchema.index({ client_id: 1, status: 1 });
 revenueSchema.index({ project_id: 1 });
 revenueSchema.index({ due_date: 1 });
+revenueSchema.index({ revenue_date: 1 });
 
 export const Revenue = model<IRevenue>('Revenue', revenueSchema);

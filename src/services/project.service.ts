@@ -134,6 +134,13 @@ export async function updateProject(
 
   const updated = await updateProjectById(id, updateData);
   if (!updated) throw new AppError('Project not found', 404);
+  if (updated.status === 'completed' || updated.status === 'cancelled') {
+    const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+    void closePendingRemindersForRecord(
+      'projects',
+      updated._id as import('mongoose').Types.ObjectId
+    ).catch(() => undefined);
+  }
   return updated;
 }
 
@@ -155,6 +162,13 @@ export async function changeProjectStatus(
 
   const updated = await updateProjectById(id, { status });
   if (!updated) throw new AppError('Project not found', 404);
+  if (status === 'completed' || status === 'cancelled') {
+    const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+    void closePendingRemindersForRecord(
+      'projects',
+      updated._id as import('mongoose').Types.ObjectId
+    ).catch(() => undefined);
+  }
   return updated;
 }
 

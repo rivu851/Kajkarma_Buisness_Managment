@@ -80,7 +80,21 @@ export async function createUpcomingPaymentEntry(
   };
 
   const created = await createUpcomingPayment(payload);
-  return (await findUpcomingPaymentById(created._id))!;
+  const saved = (await findUpcomingPaymentById(created._id))!;
+  const assignee = saved.assigned_follow_up_user ?? saved.created_by;
+  const reminderDate = saved.reminder_date ?? saved.due_date;
+  if (assignee) {
+    const { onUpcomingPaymentCreated } = await import('./reminder.service.js');
+    void onUpcomingPaymentCreated(
+      saved._id as import('mongoose').Types.ObjectId,
+      saved.amount,
+      reminderDate,
+      saved.due_date,
+      assignee as import('mongoose').Types.ObjectId,
+      saved.created_by as import('mongoose').Types.ObjectId
+    ).catch(() => undefined);
+  }
+  return saved;
 }
 
 export async function updateUpcomingPaymentEntry(
@@ -147,7 +161,13 @@ export async function markUpcomingPaymentReceived(
     await syncLinkedRevenue(existing.revenue_id.toString(), existing.amount);
   }
 
-  return (await findUpcomingPaymentById(id))!;
+  const saved = (await findUpcomingPaymentById(id))!;
+  const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+  void closePendingRemindersForRecord(
+    'upcoming-payments',
+    saved._id as import('mongoose').Types.ObjectId
+  ).catch(() => undefined);
+  return saved;
 }
 
 export async function cancelUpcomingPayment(
@@ -169,6 +189,11 @@ export async function cancelUpcomingPayment(
 
   const updated = await updateUpcomingPaymentById(id, update);
   if (!updated) throw new AppError('Upcoming payment not found', 404);
+  const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+  void closePendingRemindersForRecord(
+    'upcoming-payments',
+    updated._id as import('mongoose').Types.ObjectId
+  ).catch(() => undefined);
   return updated;
 }
 

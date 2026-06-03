@@ -76,7 +76,17 @@ export async function submitReimbursement(
   };
 
   const created = await createReimbursement(payload);
-  return (await findReimbursementById(created._id))!;
+  const saved = (await findReimbursementById(created._id))!;
+  const { onReimbursementSubmitted } = await import('./reminder.service.js');
+  const { getReimbursementApproverIds, getSuperAdminUserIds } = await import('../utils/reminderApprovers.js');
+  void onReimbursementSubmitted(
+    saved._id as import('mongoose').Types.ObjectId,
+    saved.expense_title,
+    saved.amount,
+    await getReimbursementApproverIds(),
+    await getSuperAdminUserIds()
+  ).catch(() => undefined);
+  return saved;
 }
 
 export async function updateReimbursement(

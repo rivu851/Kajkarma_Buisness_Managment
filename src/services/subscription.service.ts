@@ -92,6 +92,13 @@ export async function updateSubscriptionEntry(
     })
   );
   if (!updated) throw new AppError('Subscription not found', 404);
+  if (updated.status === 'expired' || updated.status === 'cancelled') {
+    const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+    void closePendingRemindersForRecord(
+      'subscriptions',
+      updated._id as import('mongoose').Types.ObjectId
+    ).catch(() => undefined);
+  }
   return updated;
 }
 

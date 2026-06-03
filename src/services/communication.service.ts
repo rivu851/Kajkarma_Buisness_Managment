@@ -117,7 +117,16 @@ export async function createNewCommunication(
     }) as Partial<ICommunication>
   );
 
-  return (await findCommunicationById(comm._id))!;
+  const saved = (await findCommunicationById(comm._id))!;
+  if (saved.next_follow_up_date) {
+    const { onCommunicationFollowUp } = await import('./reminder.service.js');
+    void onCommunicationFollowUp(
+      saved._id as import('mongoose').Types.ObjectId,
+      saved.next_follow_up_date,
+      toObjectId(user.userId)
+    ).catch(() => undefined);
+  }
+  return saved;
 }
 
 export async function updateCommunication(
@@ -131,6 +140,14 @@ export async function updateCommunication(
 
   const updated = await updateCommunicationById(id, data);
   if (!updated) throw new AppError('Communication not found', 404);
+  if (updated.next_follow_up_date) {
+    const { onCommunicationFollowUp } = await import('./reminder.service.js');
+    void onCommunicationFollowUp(
+      updated._id as import('mongoose').Types.ObjectId,
+      updated.next_follow_up_date,
+      updated.user_id as import('mongoose').Types.ObjectId
+    ).catch(() => undefined);
+  }
   return updated;
 }
 
