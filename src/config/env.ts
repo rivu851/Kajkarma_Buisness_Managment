@@ -25,6 +25,13 @@ export const env = {
   RATE_LIMIT_WINDOW_MS: parseInt(optional('RATE_LIMIT_WINDOW_MS', '900000'), 10),
   RATE_LIMIT_MAX: parseInt(optional('RATE_LIMIT_MAX', '100'), 10),
   ENCRYPTION_KEY: required('ENCRYPTION_KEY'),
+  DAILY_REMINDER_DIGEST_EMAIL: process.env['DAILY_REMINDER_DIGEST_EMAIL'] ?? '',
+  SMTP_HOST: process.env['SMTP_HOST'] ?? '',
+  SMTP_PORT: parseInt(optional('SMTP_PORT', '587'), 10),
+  SMTP_SECURE: optional('SMTP_SECURE', 'false') === 'true',
+  SMTP_USER: process.env['SMTP_USER'] ?? '',
+  SMTP_PASSWORD: process.env['SMTP_PASSWORD'] ?? '',
+  SMTP_FROM_EMAIL: optional('SMTP_FROM_EMAIL', 'noreply@kajkarma.com'),
   isDev: () => env.NODE_ENV === 'development',
   isProd: () => env.NODE_ENV === 'production',
 } as const;

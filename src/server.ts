@@ -6,6 +6,7 @@ import { logger } from './config/logger.js';
 import { seedSystemRoles } from './utils/seedRoles.js';
 import { seedSuperAdmin } from './utils/seedSuperAdmin.js';
 import { startReminderCron } from './cron/reminder.cron.js';
+import { startReminderDigestCron } from './cron/reminder-digest.cron.js';
 import { runScheduledReminderSync } from './services/reminder-sync.service.js';
 
 async function bootstrap(): Promise<void> {
@@ -19,6 +20,7 @@ async function bootstrap(): Promise<void> {
     logger.warn('Initial reminder sync skipped or failed', err);
   }
   startReminderCron();
+  startReminderDigestCron();
 
   const server = app.listen(env.PORT, () => {
     logger.info(`Server running on port ${env.PORT} [${env.NODE_ENV}]`);

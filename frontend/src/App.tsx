@@ -10,6 +10,7 @@ import { EmployeeProductivityTable } from './components/dashboard/EmployeeProduc
 import { AlertsPanel } from './components/dashboard/AlertsPanel';
 import { RemindersPanel } from './components/dashboard/RemindersPanel';
 import { NotificationBell } from './components/reminders/NotificationBell';
+import { ReminderToasts } from './components/dashboard/ReminderToasts';
 import { ReminderCenterPage } from './pages/ReminderCenterPage';
 import type { Reminder } from './types/reminder';
 
@@ -324,13 +325,23 @@ export default function App() {
   }
 
   return (
-    <DashboardPage
-      data={data}
-      onOpenReminders={() => setView('reminders')}
-      onSelectReminder={(r) => {
-        setSelectedReminder(r);
-        setView('reminders');
-      }}
-    />
+    <>
+      <ReminderToasts
+        enabled
+        onOpenReminderCenter={() => setView('reminders')}
+        onSelectReminder={(r) => {
+          setSelectedReminder(r);
+          setView('reminders');
+        }}
+      />
+      <DashboardPage
+        data={data}
+        onOpenReminders={() => setView('reminders')}
+        onSelectReminder={(r) => {
+          setSelectedReminder(r);
+          setView('reminders');
+        }}
+      />
+    </>
   );
 }

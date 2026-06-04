@@ -12,6 +12,7 @@ import {
   rescheduleReminderHandler,
   deleteReminder,
 } from '../controllers/reminder.controller.js';
+import { getDigestPreviewHandler } from '../controllers/reminder-digest.controller.js';
 import { authenticate } from '../middlewares/auth.middleware.js';
 import { requirePermission } from '../middlewares/permission.middleware.js';
 import { validate } from '../middlewares/validation.middleware.js';
@@ -28,6 +29,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/stats', requirePermission('reminders', 'read'), getReminderStats);
+router.get('/digest-preview', requirePermission('reminders', 'read'), getDigestPreviewHandler);
 router.get('/my', requirePermission('reminders', 'read'), validate(listRemindersSchema), getMyReminders);
 router.get('/', requirePermission('reminders', 'read'), validate(listRemindersSchema), getReminders);
 router.post('/', requirePermission('reminders', 'create'), validate(createReminderSchema), createReminder);
