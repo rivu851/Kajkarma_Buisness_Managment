@@ -1,0 +1,2380 @@
+================================================================================
+  KAJKARMA BUSINESS MANAGEMENT TOOL — COMPLETE BACKEND DOCUMENTATION
+  Generated: 2026-06-04
+  Stack: Node.js + TypeScript + Express + MongoDB (Mongoose) + Zod Validation
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+  1.  Project Overview & Architecture
+  2.  Environment Variables
+  3.  Server Startup & Boot Sequence
+  4.  Global Middleware Stack
+  5.  Authentication System
+  6.  Role System & Hierarchy
+  7.  Permission Matrix (All Roles × All Modules)
+  8.  Permission Override System (Per-User Access Control)
+  9.  Record-Level Data Scoping
+ 10.  API Base URL & Route Index
+ 11.  MODULE: AUTH          → /api/v1/auth
+ 12.  MODULE: USERS         → /api/v1/users
+ 13.  MODULE: ROLES         → /api/v1/roles
+ 14.  MODULE: LEADS         → /api/v1/leads
+ 15.  MODULE: CLIENTS       → /api/v1/clients
+ 16.  MODULE: COMMUNICATIONS → /api/v1/communications
+ 17.  MODULE: PROJECTS      → /api/v1/projects
+ 18.  MODULE: EMPLOYEES     → /api/v1/employees
+ 19.  MODULE: WORKLOGS      → /api/v1/worklogs
+ 20.  MODULE: REVENUES      → /api/v1/revenues
+ 21.  MODULE: PAYMENTS      → /api/v1/payments
+ 22.  MODULE: UPCOMING PAYMENTS → /api/v1/upcoming-payments
+ 23.  MODULE: SALARIES      → /api/v1/salaries
+ 24.  MODULE: REIMBURSEMENTS → /api/v1/reimbursements
+ 25.  MODULE: SUBSCRIPTIONS → /api/v1/subscriptions
+ 26.  MODULE: REPORTS       → /api/v1/reports
+ 27.  MODULE: DASHBOARD     → /api/v1/dashboard
+ 28.  MODULE: REMINDERS     → /api/v1/reminders
+ 29.  CRON JOBS (Background Tasks)
+ 30.  AUTO-REMINDER SYSTEM (Trigger Conditions)
+ 31.  All Enums / Allowed Values Reference
+ 32.  Error Handling & Response Format
+ 33.  Security Features Summary
+ 34.  Database Collections Summary
+
+
+================================================================================
+1. PROJECT OVERVIEW & ARCHITECTURE
+================================================================================
+
+  KajKarma BMT is a multi-role business management backend for managing:
+    - Sales pipeline (leads → clients → communications)
+    - Projects & employee worklogs
+    - HR (employees, salaries, reimbursements)
+    - Finance (revenues, payments, subscriptions, upcoming payments)
+    - Reports
+    - Automated reminder & notification system
+    - Role-based dashboards
+
+  Entry point:   src/server.ts   (bootstraps DB, seeds roles/admin, starts crons)
+  App config:    src/app.ts      (Express setup, middleware, routes)
+  Routes index:  src/routes/index.ts
+  All routes mounted under: /api/v1
+
+  Key directories:
+    src/routes/         — Express routers
+    src/controllers/    — HTTP handlers (req → service → res)
+    src/services/       — Business logic
+    src/repositories/   — MongoDB queries
+    src/models/         — Mongoose schemas
+    src/middlewares/    — auth, permission, validation, error, rate-limit
+    src/validations/    — Zod schemas for every route
+    src/constants/      — enums.ts, permissions.ts, roles.ts
+    src/utils/          — jwt, encryption, recordScope, reminderScope, AppError
+    src/cron/           — Scheduled background jobs
+    src/config/         — env.ts, db.ts, logger.ts
+
+
+================================================================================
+2. ENVIRONMENT VARIABLES
+================================================================================
+
+  REQUIRED (server will throw and refuse to start if missing):
+  -----------------------------------------------------------
+  MONGODB_URI              MongoDB connection string
+  JWT_ACCESS_SECRET        Min 32 chars. Signs access tokens (15m expiry)
+  JWT_REFRESH_SECRET       Min 32 chars. Signs refresh tokens (7d expiry)
+  COOKIE_SECRET            Signs cookies
+  ENCRYPTION_KEY           64-char hex string (= 32 bytes). AES-256-GCM for bank fields
+
+  OPTIONAL (with defaults):
+  -------------------------
+  NODE_ENV                 development | production  (default: development)
+  PORT                     Server port               (default: 5000)
+  JWT_ACCESS_EXPIRES_IN    Access token lifetime     (default: 15m)
+  JWT_REFRESH_EXPIRES_IN   Refresh token lifetime    (default: 7d)
+  SUPER_ADMIN_EMAIL        First-boot admin email    (default: admin@kajkarma.com)
+  SUPER_ADMIN_PASSWORD     First-boot admin password (default: Admin@123456)
+  CORS_ORIGIN              Allowed CORS origin       (default: http://localhost:3000)
+  RATE_LIMIT_WINDOW_MS     Rate limit window in ms   (default: 900000 = 15 minutes)
+  RATE_LIMIT_MAX           Max requests per window   (default: 100)
+  REIMBURSEMENT_APPROVAL_THRESHOLD  Amount above which Super Admin is notified (default: 10000)
+
+  OPTIONAL (email/SMTP — digest emails won't send if not configured):
+  -------------------------------------------------------------------
+  SMTP_HOST
+  SMTP_PORT                (default: 587)
+  SMTP_SECURE              true | false  (default: false)
+  SMTP_USER
+  SMTP_PASSWORD
+  SMTP_FROM_EMAIL          (default: noreply@kajkarma.com)
+  DAILY_REMINDER_DIGEST_EMAIL   Recipient for daily digest summary
+
+
+================================================================================
+3. SERVER STARTUP & BOOT SEQUENCE
+================================================================================
+
+  Order of operations when server starts:
+
+  1. connectDB()             — Connect to MongoDB via MONGODB_URI
+  2. seedSystemRoles()       — Ensure all 7 system roles exist with correct
+                               default permissions. If a system role already
+                               exists, its permissions are synced/updated.
+  3. seedSuperAdmin()        — If NO users exist in the DB, create the first
+                               super_admin user using SUPER_ADMIN_EMAIL +
+                               SUPER_ADMIN_PASSWORD. Does NOT run on subsequent
+                               restarts if users already exist.
+  4. runScheduledReminderSync() — Run full reminder sync once at boot
+                               (catches any drift since last run).
+  5. startReminderCron()     — Start cron job: every 5 minutes
+  6. startReminderDigestCron() — Start cron job: daily at 08:00 IST
+  7. app.listen(PORT)        — Start HTTP server
+
+  Health check endpoint (no auth needed):
+    GET /health  →  { status: "ok", timestamp: "..." }
+
+
+================================================================================
+4. GLOBAL MIDDLEWARE STACK
+================================================================================
+
+  Applied to ALL routes in this order:
+  1. helmet()           — Sets security HTTP headers (XSS protection, HSTS, etc.)
+  2. cors()             — Allows requests from CORS_ORIGIN only, with credentials
+  3. compression()      — gzip response compression
+  4. express.json()     — Parses JSON bodies up to 10mb
+  5. express.urlencoded() — Parses URL-encoded bodies
+  6. cookieParser()     — Parses signed cookies
+  7. globalRateLimit    — In-memory rate limit: RATE_LIMIT_MAX requests per
+                          RATE_LIMIT_WINDOW_MS (defaults: 100 req / 15 min)
+                          Returns 429 if exceeded.
+  8. routes             — All /api/v1/* routes
+  9. 404 handler        — { success: false, message: "Route not found" }
+ 10. errorMiddleware    — Global error handler (last)
+
+  Per-route middleware (applied selectively inside routers):
+  - authenticate        — Verifies Bearer JWT token (401 if missing/invalid)
+  - requireRole(...)    — Checks user.roleName against allowed role names (403)
+  - requirePermission(module, action)  — Checks role permissions + access control
+                          overrides for the given module:action pair (403)
+  - validate(zodSchema) — Validates request body/params/query against Zod schema
+                          Returns 422 with field errors on validation failure
+
+
+================================================================================
+5. AUTHENTICATION SYSTEM
+================================================================================
+
+  Token Format:
+    - Authorization header: "Bearer <access_token>"
+    - Access token:   JWT, expires in JWT_ACCESS_EXPIRES_IN (default 15m)
+    - Refresh token:  JWT, expires in JWT_REFRESH_EXPIRES_IN (default 7d)
+
+  JWT Payload (decoded into req.user after authentication):
+    {
+      userId:   string   (MongoDB ObjectId of user)
+      email:    string
+      roleName: string   (e.g. "super_admin", "hr")
+      roleId:   string   (MongoDB ObjectId of role)
+    }
+
+  Authentication Flow:
+    1. Client POSTs to /api/v1/auth/login with email + password
+    2. Server validates credentials, checks user.status === 'active'
+    3. Creates LoginAudit record (IP, user-agent, success/failure)
+    4. Returns { accessToken, refreshToken, user: {...} }
+    5. Client attaches accessToken in Authorization header for every request
+    6. When access token expires, client POSTs refreshToken to /api/v1/auth/refresh
+    7. Server issues new accessToken + refreshToken pair
+
+  Conditions that block login:
+    - User not found                → 401 "Invalid credentials"
+    - Password does not match       → 401 "Invalid credentials"
+    - user.status !== 'active'      → 403 "Account is not active"
+
+  All LoginAudit records are stored in the login_audits collection.
+
+
+================================================================================
+6. ROLE SYSTEM & HIERARCHY
+================================================================================
+
+  There are 7 SYSTEM roles (cannot be deleted, names cannot be changed):
+
+  Role Name          Hierarchy Level   Description
+  ─────────────────────────────────────────────────────────────────────────────
+  super_admin              100         Full unrestricted access to everything
+  admin                     80         Almost full access (see permission matrix)
+  sales_manager             60         CRM: leads, clients, communications
+  project_manager           60         Projects, employees (read), worklogs, reports
+  hr                        60         Employees, salaries, reimbursements
+  finance                   60         Revenue, payments, salary, subscriptions
+  sales_executive           40         Limited CRM access, own records only
+
+  Custom roles can be created by super_admin with custom permission sets.
+
+  Role Hierarchy Rules:
+    - A user can only assign roles with a LOWER hierarchy level than their own.
+    - Example: admin (80) can assign up to level 79 — can assign sales_manager (60)
+      but CANNOT assign another admin (80) or super_admin (100).
+    - A user cannot change their own role.
+    - A user cannot delete themselves.
+
+  Super Admin Bypass:
+    - The requirePermission() middleware short-circuits for super_admin.
+    - super_admin always passes ALL permission checks regardless of stored
+      permissions.
+
+
+================================================================================
+7. PERMISSION MATRIX (All Roles × All Modules)
+================================================================================
+
+  Format: R=read, C=create, U=update, D=delete, -=no access, ALL=full RCUD
+
+  Module              super_admin  admin      sales_mgr  sales_exec  proj_mgr  hr     finance
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+  users               ALL          ALL        -          -           -         -      -
+  roles               ALL          R          -          -           -         -      -
+  leads               ALL          ALL        ALL        R,C,U       -         -      -
+  clients             ALL          ALL        ALL        R,C,U       R         -      -
+  communications      ALL          ALL        ALL        ALL         -         -      -
+  reminders           ALL          ALL        ALL        ALL         ALL       ALL    ALL
+  projects            ALL          ALL        -          R           ALL       -      -
+  employees           ALL          R,C,U      -          -           R         ALL    R
+  worklogs            ALL          ALL        -          R,C,U       R,C,U     -      -
+  revenue             ALL          R          -          -           -         -      ALL
+  payments            ALL          R          -          -           -         -      ALL
+  salary              ALL          R          -          -           -         ALL    ALL
+  reimbursements      ALL          ALL        -          -           -         ALL    ALL
+  reports             ALL          ALL        R          -           ALL       -      -
+  subscriptions       ALL          R          -          -           -         -      ALL
+  dashboard           ALL          R          R          R           R         R      R
+  forecasting         ALL          R          -          -           -         -      -
+
+  Notes:
+  - admin cannot DELETE employees (R,C,U only)
+  - sales_executive cannot DELETE leads or clients (R,C,U only)
+  - sales_executive and project_manager cannot DELETE worklogs (R,C,U only)
+  - All modules not listed for a role default to NO ACCESS
+  - super_admin bypasses the permission check entirely (no DB query needed)
+  - Access control overrides (set by super_admin per user) take priority over
+    role defaults
+
+
+================================================================================
+8. PERMISSION OVERRIDE SYSTEM (Per-User Access Control)
+================================================================================
+
+  super_admin can set custom module permissions for any individual user.
+  These overrides are stored in the access_controls collection.
+
+  How it works:
+    1. requirePermission() middleware fetches:
+         a) The user's role permissions (from roles collection)
+         b) The user's access_control overrides (from access_controls collection)
+    2. If an override exists for the module → use override
+    3. If no override → fall back to role permissions
+    4. If neither grants the action → 403
+
+  This allows super_admin to:
+    - Grant a finance user access to leads (not in their role)
+    - Restrict an admin from accessing certain modules
+    - Give a sales_executive delete permission on leads
+
+  Endpoints for this:
+    GET  /api/v1/users/:id/access-control   → View overrides for a user
+    PATCH /api/v1/users/:id/access-control  → Set overrides for a user
+  Both require: super_admin only
+
+
+================================================================================
+9. RECORD-LEVEL DATA SCOPING
+================================================================================
+
+  Beyond module permissions, some roles have record-level restrictions — they
+  can read the module but only see their own assigned records.
+
+  Who has FULL access (sees everything in a module):
+    super_admin, admin, sales_manager, project_manager, hr, finance
+
+  Sales Executive scoping:
+    - leads:          Only sees leads where assigned_user_id === their userId
+    - clients:        Only sees clients where assigned_manager_id === their userId
+    - communications: Only sees communications where user_id === their userId
+    - projects:       READ-ONLY, sees all projects (no record scope restriction)
+    - worklogs:       Only sees worklogs where employee's user_id === their userId
+
+  Employee-level scoping (for project/worklog access):
+    - Worklogs: HR/Admin/Project Manager see all; otherwise only own worklogs
+
+  Reminder scoping:
+    - super_admin, admin:    See ALL reminders
+    - sales_manager:         Sees reminders for modules: leads, clients,
+                             communications, upcoming-payments
+    - project_manager:       Sees reminders for modules: projects, reports,
+                             worklogs
+    - hr:                    Sees reminders for modules: salary, reimbursements,
+                             employees
+    - finance:               Sees reminders for modules: salary, upcoming-payments,
+                             subscriptions, reimbursements, revenue
+    - sales_executive + others: Only sees reminders assigned to themselves
+
+  /reminders/my — always returns ONLY reminders assigned to the requesting user,
+                  regardless of role.
+
+
+================================================================================
+10. API BASE URL & ROUTE INDEX
+================================================================================
+
+  Base URL: http://localhost:5000/api/v1
+
+  Route prefix       → Source file
+  ─────────────────────────────────────────────────────────────────────────────
+  /auth              → src/routes/auth.routes.ts
+  /users             → src/routes/users.routes.ts
+  /roles             → src/routes/roles.routes.ts
+  /leads             → src/routes/leads.routes.ts
+  /clients           → src/routes/clients.routes.ts
+  /communications    → src/routes/communications.routes.ts
+  /projects          → src/routes/projects.routes.ts
+  /employees         → src/routes/employees.routes.ts
+  /worklogs          → src/routes/worklogs.routes.ts
+  /revenues          → src/routes/revenues.routes.ts
+  /payments          → src/routes/payments.routes.ts
+  /upcoming-payments → src/routes/upcoming_payments.routes.ts
+  /salaries          → src/routes/salaries.routes.ts
+  /reimbursements    → src/routes/reimbursements.routes.ts
+  /subscriptions     → src/routes/subscriptions.routes.ts
+  /reports           → src/routes/reports.routes.ts
+  /dashboard         → src/routes/dashboard.routes.ts
+  /reminders         → src/routes/reminder.routes.ts
+
+
+================================================================================
+11. MODULE: AUTH  →  /api/v1/auth
+================================================================================
+
+  No authentication required for login and refresh.
+  Rate limiting applies globally.
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/auth/login
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   Public (no auth needed)
+  Body: {
+    email:    string (required, valid email format)
+    password: string (required, min 1 char)
+  }
+  Returns:  { accessToken, refreshToken, user: { _id, name, email, role } }
+  Logic:
+    - Finds user by email
+    - Compares password with bcrypt (12 rounds)
+    - Checks user.status === 'active' (403 if not)
+    - Creates LoginAudit record with IP, user-agent, timestamp, success/failure
+    - Returns JWT access token (15m) + refresh token (7d)
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/auth/logout
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   Authenticated (any role)
+  Body:     none
+  Returns:  { message: "Logged out successfully" }
+  Logic:
+    - Clears any auth cookies
+    - Does NOT invalidate tokens server-side (stateless JWT)
+    - Client should discard tokens
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/auth/refresh
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   Public (no auth needed, but requires valid refresh token)
+  Body: {
+    refreshToken: string (required)
+  }
+  Returns:  { accessToken, refreshToken }
+  Logic:
+    - Verifies the refresh token signature and expiry
+    - Fetches current user from DB to get latest role/status
+    - Checks user.status === 'active' (403 if not)
+    - Issues new access token + refresh token pair
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/auth/me
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   Authenticated (any role)
+  Body:     none
+  Returns:  { user: { _id, name, email, role, status, ... } }
+  Logic:
+    - Returns the currently authenticated user's full profile
+    - Password field is always removed from response
+
+
+================================================================================
+12. MODULE: USERS  →  /api/v1/users
+================================================================================
+
+  All routes require authentication.
+  Most require admin or super_admin role.
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/users
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Query params:
+    page:    number (default: 1)
+    limit:   number (default: 20, max: 100)
+    search:  string (optional — searches name and email)
+  Returns:  Paginated list of users with role info
+  Logic:    Lists all users. Passwords excluded from response.
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/users
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Body: {
+    name:     string (required, min 2 chars)
+    email:    string (required, valid email)
+    password: string (required, min 8 chars)
+    role_id:  string (required, must be a valid role ObjectId)
+    source:   string (optional)
+  }
+  Returns:  Created user object (without password)
+  Conditions:
+    - Email must be unique across all users (409 if duplicate)
+    - The role being assigned must have a hierarchy level LOWER than the
+      requestor's own level. Example: an admin (level 80) cannot create a user
+      with the super_admin role (level 100).
+    - Password is hashed with bcrypt (12 rounds) before storage
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/users/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Params:   id (MongoDB ObjectId of user)
+  Returns:  Single user object with role info (password excluded)
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/users/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Params:   id
+  Body: {
+    name:   string (optional, min 2 chars)
+    email:  string (optional, valid email)
+    source: string (optional)
+  }
+  Returns:  Updated user object
+  Conditions:
+    - Only name, email, source can be updated via this endpoint
+    - Email uniqueness check still applies
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/users/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   super_admin ONLY
+  Params:   id
+  Returns:  { message: "User deleted" }
+  Conditions:
+    - CANNOT delete your own account (403 "Cannot delete your own account")
+    - Hard delete from database
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/users/:id/status
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Params:   id
+  Body: {
+    status: "active" | "inactive" | "suspended"  (required)
+  }
+  Returns:  Updated user object
+  Conditions:
+    - CANNOT change your own status (403 "Cannot change your own status")
+    - Setting status to inactive/suspended will block that user from logging in
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/users/:id/role
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Params:   id
+  Body: {
+    role_id: string (required, valid role ObjectId)
+  }
+  Returns:  Updated user object
+  Conditions:
+    - The new role must have hierarchy level LOWER than the requestor
+    - Cannot change your own role
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/users/:id/permissions
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Params:   id
+  Returns:  The effective permissions for this user
+            (role permissions merged with any access control overrides)
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/users/:id/access-control
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   super_admin ONLY
+  Params:   id
+  Returns:  The per-user access control override document (or empty if none set)
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/users/:id/access-control
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   super_admin ONLY
+  Params:   id
+  Body: {
+    module_permissions: {
+      "<module_name>": {
+        read:   boolean,
+        create: boolean,
+        update: boolean,
+        delete: boolean
+      },
+      ...
+    }
+  }
+  Returns:  Updated access control document
+  Logic:
+    - Replaces the per-user module permission overrides
+    - These overrides take precedence over role-level permissions
+    - Module names must be valid (from MODULES constant)
+    - Pass null/omit module_permissions to clear all overrides
+
+
+================================================================================
+13. MODULE: ROLES  →  /api/v1/roles
+================================================================================
+
+  All routes require authentication.
+  Read endpoints require admin or super_admin.
+  Write/delete endpoints require super_admin only.
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/roles
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Returns:  List of all roles (system + custom)
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/roles/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Params:   id
+  Returns:  Single role with full permission map
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/roles
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   super_admin ONLY
+  Body: {
+    name:        string (required, min 2 chars, only lowercase/numbers/underscores)
+    description: string (optional)
+    permissions: {
+      "<module>": { read: bool, create: bool, update: bool, delete: bool }
+    }  (optional — defaults to all false if omitted)
+  }
+  Returns:  Created role document
+  Conditions:
+    - Role name must be unique (409 if duplicate)
+    - Name format: /^[a-z0-9_]+$/ — only lowercase letters, numbers, underscores
+    - Cannot create a role named after an existing system role
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/roles/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   super_admin ONLY
+  Params:   id
+  Body: {
+    name:        string (optional)
+    description: string (optional)
+  }
+  Returns:  Updated role document
+  Conditions:
+    - CANNOT rename system roles (is_system = true) — 403
+    - Name uniqueness still applies
+    - This endpoint only updates name/description, NOT permissions
+      (use PATCH /:id/permissions for that)
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/roles/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   super_admin ONLY
+  Params:   id
+  Returns:  { message: "Role deleted" }
+  Conditions:
+    - CANNOT delete system roles (is_system = true) — 403
+    - CANNOT delete a role if any users are currently assigned to it — 400
+      (must reassign those users first)
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/roles/:id/permissions
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   super_admin ONLY
+  Params:   id
+  Body: {
+    permissions: {
+      "<module>": { read: bool, create: bool, update: bool, delete: bool }
+    }
+  }
+  Returns:  Updated role with new permissions
+  Logic:    Replaces the entire permissions map for the role.
+            Module names are validated against the MODULES constant.
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/roles/:id/users
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   admin or super_admin
+  Params:   id
+  Returns:  List of users currently assigned to this role
+
+
+================================================================================
+14. MODULE: LEADS  →  /api/v1/leads
+================================================================================
+
+  All routes require authentication + reminders:read or leads:read/write permission.
+
+  Lead Stages (in order):
+    new → contacted → proposal_sent → negotiation → won / lost
+
+  Lead Statuses: active | on_hold | unresponsive | dropped
+
+  Record Scoping:
+    - sales_executive: Only sees leads where assigned_user_id === their userId
+    - All other roles with leads:read: See all leads
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/leads
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:read permission required
+  Query params:
+    page:             number (default: 1)
+    limit:            number (default: 20, max: 100)
+    search:           string (searches lead_name, email, company_name)
+    stage:            new | contacted | proposal_sent | negotiation | won | lost
+    status:           active | on_hold | unresponsive | dropped
+    assigned_user_id: ObjectId (filter by assigned user)
+    source:           string
+  Returns:  Paginated list of leads (scoped by role — sales_exec sees only own)
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/leads
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:create permission required
+  Body: {
+    lead_name:        string (required)
+    phone_number:     string (optional)
+    email:            string (optional, valid email or "")
+    company_name:     string (optional)
+    sector:           string (optional)
+    source:           string (required)
+    stage:            lead stage enum (optional, default: "new")
+    status:           lead status enum (optional, default: "active")
+    tags:             string[] (optional)
+    notes:            string (optional)
+    follow_up_date:   date (optional)
+    assigned_user_id: ObjectId (optional)
+  }
+  Returns:  Created lead document
+  Side effects:
+    - If follow_up_date is set AND assigned_user_id is set → auto-creates a
+      lead_followup reminder for the assigned user
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/leads/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:read permission + record scope check
+  Returns:  Single lead with stage history, populated assigned user
+  Conditions:
+    - sales_executive gets 403/404 if the lead is not assigned to them
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/leads/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:update permission
+  Params:   id
+  Body: {
+    lead_name:       string (optional)
+    phone_number:    string (optional)
+    email:           string (optional)
+    company_name:    string (optional)
+    sector:          string (optional)
+    source:          string (optional)
+    status:          lead status enum (optional)
+    tags:            string[] (optional)
+    notes:           string (optional)
+    follow_up_date:  date or null (optional — set to null to clear)
+  }
+  Returns:  Updated lead document
+  Side effects:
+    - If follow_up_date changes → old lead_followup reminders cancelled,
+      new reminder created for new date
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/leads/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:delete permission
+  Params:   id
+  Returns:  { message: "Lead deleted" }
+  Note:     Hard delete
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/leads/:id/stage
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:update permission
+  Params:   id
+  Body: {
+    stage: "new" | "contacted" | "proposal_sent" | "negotiation" | "won" | "lost"
+           (required)
+    note:  string (optional — added to stage history)
+  }
+  Returns:  Updated lead document
+  Logic:
+    - Records the stage change in lead.history array with timestamp and user
+    - If stage changes to "won" or "lost":
+        → All pending lead_followup reminders for this lead are cancelled
+    - Stage can be set to any value (no enforced linear progression)
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/leads/:id/assign
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:update permission
+  Params:   id
+  Body: {
+    assigned_user_id: ObjectId (required)
+  }
+  Returns:  Updated lead document
+  Conditions:
+    - sales_executive can only reassign to users with LOWER hierarchy than
+      themselves (cannot reassign to managers/admins)
+    - After reassignment, if follow_up_date exists, a new reminder is created
+      for the new assignee
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/leads/:id/convert
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:update permission
+  Params:   id (lead id)
+  Body:     none (id is passed as URL param, validated via idParamSchema)
+  Returns:  { lead: {...}, client: {...} }
+  Conditions:
+    - Lead MUST be in stage === "won" to convert (400 if not)
+    - Creates a new Client document from the lead's data
+    - Sets client.source_lead_id to this lead's id
+    - Marks lead.client_id with the new client's id
+    - All pending reminders for this lead are cancelled
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/leads/:id/notes
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   leads:update permission
+  Params:   id
+  Body: {
+    note: string (required, min 1 char)
+  }
+  Returns:  Updated lead with new note in history
+  Logic:    Appends a note entry to lead.history with timestamp and user_id
+
+
+================================================================================
+15. MODULE: CLIENTS  →  /api/v1/clients
+================================================================================
+
+  Client Statuses: active | on_hold | churned | prospect
+
+  Record Scoping:
+    - sales_executive: Only sees clients where assigned_manager_id === their userId
+    - All other roles with clients:read: See all clients
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/clients
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   clients:read permission
+  Query params:
+    page:                number (default: 1)
+    limit:               number (default: 20, max: 100)
+    search:              string (searches company_name, contact_person_name, email)
+    status:              active | on_hold | churned | prospect
+    assigned_manager_id: ObjectId
+    sector:              string
+  Returns:  Paginated list of clients (scoped by role)
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/clients
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   clients:create permission
+  Body: {
+    company_name:         string (required)
+    contact_person_name:  string (required)
+    email:                string (optional, valid email or "")
+    phone_number:         string (optional)
+    website_link:         string (optional, valid URL or "")
+    social_media_links:   Record<string, string> (optional)
+    sector:               string (optional)
+    address:              string (optional)
+    status:               client status enum (optional, default: "active")
+    assigned_manager_id:  ObjectId (optional)
+    notes:                string (optional)
+    source_lead_id:       ObjectId (optional — links this client to a lead)
+  }
+  Returns:  Created client document
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/clients/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   clients:read permission + record scope
+  Returns:  Single client document
+  Conditions:
+    - sales_executive gets 403 if not assigned to this client
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/clients/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   clients:update permission
+  Body:     Same optional fields as create (minus source_lead_id)
+  Returns:  Updated client document
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/clients/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   clients:delete permission
+  Returns:  { message: "Client deleted" }
+
+
+================================================================================
+16. MODULE: COMMUNICATIONS  →  /api/v1/communications
+================================================================================
+
+  Communication Types:  call | email | whatsapp | meeting | video_call
+  Entity Types:         lead | client
+
+  Record Scoping:
+    - sales_executive: Only sees communications where user_id === their userId
+    - All other roles with communications:read: See all communications
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/communications
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   communications:read permission
+  Query params:
+    page:        number
+    limit:       number
+    entity_type: lead | client
+    entity_id:   ObjectId (filter by specific lead or client)
+    type:        call | email | whatsapp | meeting | video_call
+    user_id:     ObjectId (filter by who logged the communication)
+  Returns:  Paginated list (scoped by role for sales_executive)
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/communications
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   communications:create permission
+  Body: {
+    entity_type:        "lead" | "client" (required)
+    entity_id:          ObjectId (required — the lead or client being communicated)
+    date:               date (optional, defaults to now)
+    type:               communication type enum (required)
+    notes:              string (optional)
+    outcome:            string (optional)
+    next_follow_up_date: date (optional)
+  }
+  Returns:  Created communication document
+  Side effects:
+    - user_id is automatically set to the authenticated user's id
+    - If next_follow_up_date is set → auto-creates a communication_followup
+      reminder for the logging user
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/communications/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   communications:read permission + record scope
+  Returns:  Single communication document
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/communications/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   communications:update permission
+  Body: {
+    date:               date (optional)
+    type:               communication type enum (optional)
+    notes:              string (optional)
+    outcome:            string (optional)
+    next_follow_up_date: date or null (optional)
+  }
+  Returns:  Updated communication document
+  Side effects:
+    - If next_follow_up_date changes → old follow-up reminders cancelled,
+      new reminder created for new date
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/communications/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   communications:delete permission
+  Returns:  { message: "Communication deleted" }
+
+
+================================================================================
+17. MODULE: PROJECTS  →  /api/v1/projects
+================================================================================
+
+  Project Categories: web_app | mobile_app | seo | digital_marketing |
+                      social_media | graphic_design | content
+  Project Statuses:   not_started | in_progress | on_hold | completed | cancelled
+  Project Priorities: low | medium | high | critical
+  Payment Statuses:   unpaid | partially_paid | fully_paid
+
+  Record Scoping:
+    - All roles with projects:read see all projects (no record-level filter)
+    - sales_executive has READ-ONLY access
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/projects
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   projects:read permission
+  Query params:
+    page:      number
+    limit:     number
+    search:    string (searches project_name)
+    status:    project status enum
+    client_id: ObjectId
+    category:  project category enum
+    priority:  project priority enum
+  Returns:  Paginated list of projects with populated client and employees
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/projects
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   projects:create permission
+  Body: {
+    project_name:       string (required)
+    client_id:          ObjectId (required)
+    category:           project category enum (required)
+    start_date:         date (optional)
+    end_date:           date (optional)
+    status:             project status enum (optional, default: "not_started")
+    priority:           project priority enum (optional, default: "medium")
+    assigned_employees: ObjectId[] (optional — array of employee _ids)
+    payment_status:     payment status enum (optional, default: "unpaid")
+    notes:              string (optional)
+  }
+  Returns:  Created project document
+  Logic:
+    - created_by is set to the authenticated user's id
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/projects/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   projects:read permission
+  Returns:  Single project with populated client, employees
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/projects/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   projects:update permission
+  Body: {
+    project_name:       string (optional)
+    category:           project category enum (optional)
+    start_date:         date or null (optional)
+    end_date:           date or null (optional)
+    priority:           project priority enum (optional)
+    assigned_employees: ObjectId[] (optional)
+    payment_status:     payment status enum (optional)
+    notes:              string (optional)
+  }
+  Returns:  Updated project document
+  Note:     To change status use the dedicated /status endpoint
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/projects/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   projects:delete permission
+  Returns:  { message: "Project deleted" }
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/projects/:id/status
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   projects:update permission
+  Params:   id
+  Body: {
+    status: project status enum (required)
+  }
+  Returns:  Updated project document
+  Conditions:
+    - Setting status to "in_progress" requires:
+        a) assigned_employees array is non-empty
+        b) end_date is set
+        If either condition fails → 400 error
+    - Setting status to "completed" or "cancelled":
+        → All pending project_deadline reminders for this project are cancelled
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/projects/:id/assign
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   projects:update permission
+  Params:   id
+  Body: {
+    assigned_employees: ObjectId[] (required, min 1 employee)
+  }
+  Returns:  Updated project document
+  Logic:    Replaces the entire assigned_employees array with the new list
+
+
+================================================================================
+18. MODULE: EMPLOYEES  →  /api/v1/employees
+================================================================================
+
+  Employee Statuses: active | on_leave | resigned | terminated
+
+  Sensitive Fields (restricted based on viewer's role):
+    salary, pending_salary, date_of_birth, bank_account_holder,
+    bank_name, account_number, ifsc_code, branch_name, upi_id
+
+  Who can see sensitive fields:
+    - super_admin, admin, hr, finance: Always visible
+    - The employee themselves (via /employees/me): Visible
+    - All other roles: These fields are stripped from the response
+
+  Encryption:
+    - account_number and upi_id are stored encrypted at rest using AES-256-GCM
+    - account_number is shown as masked (e.g. "****1234") to everyone
+      except HR/Finance/super_admin who see the real value
+    - Decryption happens automatically in the service layer before responding
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/employees
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   employees:read permission
+  Query params:
+    page:       number
+    limit:      number
+    search:     string (searches full_name, email, department, role_designation)
+    status:     active | on_leave | resigned | terminated
+    department: string
+  Returns:  Paginated list of employees (sensitive fields filtered by role)
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/employees
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   employees:create permission
+  Body: {
+    user_id:           ObjectId (optional — links employee to a system user account)
+    full_name:         string (required)
+    date_of_birth:     date (optional)
+    phone_number:      string (optional)
+    email:             string (optional, valid email or "")
+    department:        string (required)
+    role_designation:  string (required)
+    joining_date:      date (required)
+    salary:            number (optional, min 0)
+    pending_salary:    number (optional, min 0)
+    status:            employee status enum (optional, default: "active")
+    -- bank fields (optional) --
+    bank_account_holder: string
+    bank_name:           string
+    account_number:      string (encrypted before storage)
+    ifsc_code:           string (encrypted before storage)
+    branch_name:         string
+    upi_id:              string (encrypted before storage)
+  }
+  Returns:  Created employee document
+  Conditions:
+    - user_id must be unique per employee (sparse unique index — one employee
+      record per user account)
+    - Bank fields (account_number, upi_id) are encrypted via AES-256-GCM
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/employees/me
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   Authenticated (any role, no permission check)
+  Returns:  The employee record linked to the current user (via user_id)
+            Returns full record including sensitive fields
+            Returns 404 if no employee linked to this user account
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/employees/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   employees:read permission
+  Returns:  Single employee (sensitive fields filtered by viewer's role)
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/employees/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   employees:update permission
+  Body:     Same optional fields as create
+  Returns:  Updated employee document
+  Conditions:
+    - If account_number or upi_id are updated, they are re-encrypted
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/employees/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   employees:delete permission
+  Returns:  { message: "Employee deleted" }
+
+
+================================================================================
+19. MODULE: WORKLOGS  →  /api/v1/worklogs
+================================================================================
+
+  Work Statuses: in_progress | completed | blocked
+
+  Record Scoping:
+    - HR, Admin, Super Admin, Project Manager: See ALL worklogs
+    - Others (including sales_executive): See only worklogs for their own
+      employee record (where employee.user_id === their userId)
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/worklogs
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   worklogs:read permission
+  Query params:
+    page:        number
+    limit:       number
+    employee_id: ObjectId
+    project_id:  ObjectId
+    work_status: in_progress | completed | blocked
+    date_from:   date
+    date_to:     date
+  Returns:  Paginated list of worklogs (scoped by role)
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/worklogs
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   worklogs:create permission
+  Body: {
+    employee_id:        ObjectId (optional — if omitted, auto-resolved from
+                                   current user's linked employee record)
+    date:               date (required)
+    project_id:         ObjectId (required)
+    task_title:         string (required)
+    task_description:   string (optional)
+    time_spent_hours:   number (required, min 0)
+    work_status:        work status enum (optional, default: "in_progress")
+    remarks:            string (optional)
+  }
+  Returns:  Created worklog document
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/worklogs/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   worklogs:read permission
+  Returns:  Single worklog with populated employee and project
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/worklogs/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   worklogs:update permission
+  Body: {
+    date:               date (optional)
+    project_id:         ObjectId (optional)
+    task_title:         string (optional)
+    task_description:   string (optional)
+    time_spent_hours:   number (optional)
+    work_status:        work status enum (optional)
+    remarks:            string (optional)
+  }
+  Returns:  Updated worklog
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/worklogs/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   worklogs:delete permission
+  Returns:  { message: "Worklog deleted" }
+
+
+================================================================================
+20. MODULE: REVENUES  →  /api/v1/revenues
+================================================================================
+
+  Revenue Types:    one_time | recurring | milestone
+  Revenue Statuses: pending | partial | received | overdue
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/revenues
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   revenue:read permission
+  Query params:
+    page:       number
+    limit:      number
+    client_id:  ObjectId
+    project_id: ObjectId
+    status:     revenue status enum
+    type:       revenue type enum
+  Returns:  Paginated list of revenue records
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/revenues
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   revenue:create permission
+  Body: {
+    client_id:    ObjectId (required)
+    project_id:   ObjectId (optional)
+    title:        string (required)
+    amount:       number (required, positive)
+    revenue_date: date (required)
+    due_date:     date (optional)
+    type:         revenue type enum (required)
+    notes:        string (optional)
+  }
+  Returns:  Created revenue document
+  Note:     created_by auto-set to authenticated user
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/revenues/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   revenue:read permission
+  Returns:  Single revenue document
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/revenues/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   revenue:update permission
+  Body: {
+    title:        string (optional)
+    amount:       number (optional, positive)
+    revenue_date: date (optional)
+    due_date:     date or null (optional)
+    type:         revenue type enum (optional)
+    status:       revenue status enum (optional)
+    notes:        string (optional)
+  }
+  Returns:  Updated revenue document
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/revenues/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   revenue:delete permission
+  Returns:  { message: "Revenue deleted" }
+
+
+================================================================================
+21. MODULE: PAYMENTS  →  /api/v1/payments
+================================================================================
+
+  Payment Methods: bank_transfer | upi | cash | cheque | card | online
+
+  These are actual received payments linked to revenue records.
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/payments
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:read permission
+  Query params:
+    page:           number
+    limit:          number
+    revenue_id:     ObjectId
+    client_id:      ObjectId
+    project_id:     ObjectId
+    payment_method: payment method enum
+  Returns:  Paginated list of payments
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/payments
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:create permission
+  Body: {
+    revenue_id:       ObjectId (required — links this payment to a revenue record)
+    amount:           number (required, positive)
+    payment_date:     date (required)
+    payment_method:   payment method enum (required)
+    reference_number: string (optional — cheque number, UTR, etc.)
+    notes:            string (optional)
+  }
+  Returns:  Created payment document
+  Note:     client_id and project_id are auto-inherited from the linked revenue
+            created_by is set to authenticated user
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/payments/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:read permission
+  Returns:  Single payment with populated revenue and client
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/payments/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:update permission
+  Body: {
+    amount:           number (optional)
+    payment_date:     date (optional)
+    payment_method:   payment method enum (optional)
+    reference_number: string (optional)
+    notes:            string (optional)
+  }
+  Returns:  Updated payment
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/payments/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:delete permission
+  Returns:  { message: "Payment deleted" }
+
+
+================================================================================
+22. MODULE: UPCOMING PAYMENTS  →  /api/v1/upcoming-payments
+================================================================================
+
+  Upcoming Payment Types:    confirmed | expected
+  Upcoming Payment Statuses: pending | received | overdue | cancelled
+
+  These are EXPECTED/FORECASTED future payments from clients (not yet received).
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/upcoming-payments
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:read permission
+  Query params:
+    page:                 number
+    limit:                number
+    client_id:            ObjectId
+    project_id:           ObjectId
+    payment_status:       upcoming payment status enum
+    payment_type:         confirmed | expected
+    assigned_follow_up_user: ObjectId
+    due_within_days:      number (filter: due in next N days)
+  Returns:  Paginated list
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/upcoming-payments
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:create permission
+  Body: {
+    client_id:               ObjectId (required)
+    project_id:              ObjectId (optional)
+    revenue_id:              ObjectId (optional — link to a revenue record)
+    amount:                  number (required, positive)
+    due_date:                date (required)
+    payment_type:            "confirmed" | "expected" (required)
+    reminder_date:           date (optional — when to trigger reminder; defaults to due_date)
+    assigned_follow_up_user: ObjectId (optional)
+    notes:                   string (optional)
+  }
+  Returns:  Created upcoming payment
+  Side effects:
+    - If reminder_date is set AND assigned_follow_up_user is set →
+      auto-creates a client_payment reminder
+      Priority: "critical" if due_date is already past, "high" otherwise
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/upcoming-payments/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:read permission
+  Returns:  Single upcoming payment
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/upcoming-payments/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:update permission
+  Body: {
+    amount:                  number (optional)
+    due_date:                date (optional)
+    payment_type:            enum (optional)
+    reminder_date:           date (optional)
+    assigned_follow_up_user: ObjectId (optional)
+    notes:                   string (optional)
+  }
+  Returns:  Updated record
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/upcoming-payments/:id/receive
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:update permission
+  Params:   id
+  Body: {
+    notes: string (optional)
+  }
+  Returns:  Updated record with status = "received"
+  Side effects:
+    - Sets payment_status = "received"
+    - Cancels all pending client_payment reminders for this record
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/upcoming-payments/:id/cancel
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:update permission
+  Params:   id
+  Body: {
+    notes: string (optional)
+  }
+  Returns:  Updated record with status = "cancelled"
+  Side effects:
+    - Sets payment_status = "cancelled"
+    - Cancels all pending client_payment reminders for this record
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/upcoming-payments/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   payments:delete permission
+  Returns:  { message: "Upcoming payment deleted" }
+
+
+================================================================================
+23. MODULE: SALARIES  →  /api/v1/salaries
+================================================================================
+
+  Salary Statuses:       pending | paid | on_hold
+  Salary Payment Modes:  bank_transfer | upi | cash | cheque
+
+  Constraint: ONE salary record per employee per month+year (unique index)
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/salaries
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   salary:read permission
+  Query params:
+    page:        number
+    limit:       number
+    employee_id: ObjectId
+    month:       number (1–12)
+    year:        number (min 2000)
+    status:      salary status enum
+  Returns:  Paginated list
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/salaries
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   salary:create permission
+  Body: {
+    employee_id:  ObjectId (required)
+    month:        number (required, 1–12)
+    year:         number (required, min 2000)
+    base_salary:  number (required, non-negative)
+    bonus:        number (optional, non-negative)
+    deductions:   number (optional, non-negative)
+    notes:        string (optional)
+  }
+  Returns:  Created salary record
+  Logic:
+    - net_salary is auto-calculated: base_salary + bonus - deductions
+    - Status defaults to "pending"
+    - 409 if a record already exists for this employee + month + year
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/salaries/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   salary:read permission
+  Returns:  Single salary record with populated employee
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/salaries/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   salary:update permission
+  Body: {
+    base_salary: number (optional)
+    bonus:       number (optional)
+    deductions:  number (optional)
+    notes:       string (optional)
+  }
+  Returns:  Updated salary (net_salary recalculated)
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/salaries/:id/pay
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   salary:update permission
+  Params:   id
+  Body: {
+    payment_mode: salary payment mode enum (required)
+    payment_date: date (required)
+    notes:        string (optional)
+  }
+  Returns:  Updated salary record
+  Logic:
+    - Sets status = "paid"
+    - Sets payment_mode, payment_date
+    - Sets paid_by = authenticated user's id
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/salaries/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   salary:delete permission
+  Returns:  { message: "Salary record deleted" }
+
+
+================================================================================
+24. MODULE: REIMBURSEMENTS  →  /api/v1/reimbursements
+================================================================================
+
+  Reimbursement Statuses:  submitted → under_review → approved / rejected → paid
+  Reimbursement Categories: travel | meals | office_supplies | software |
+                             client_entertainment | other
+
+  Workflow:
+    1. Employee submits via POST (status = "submitted")
+    2. HR/Finance sets to "under_review" (or auto via PATCH general)
+    3. HR/Finance approves via PATCH /:id/approve (status = "approved")
+       OR rejects via PATCH /:id/reject (status = "rejected")
+    4. Once approved, Finance marks paid via PATCH /:id/pay (status = "paid")
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reimbursements
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reimbursements:read permission
+  Query params:
+    page:        number
+    limit:       number
+    employee_id: ObjectId
+    status:      reimbursement status enum
+    category:    reimbursement category enum
+    project_id:  ObjectId
+    client_id:   ObjectId
+  Returns:  Paginated list
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/reimbursements
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reimbursements:create permission
+  Body: {
+    employee_id:         ObjectId (required)
+    expense_title:       string (required, max 300 chars)
+    amount:              number (required, positive)
+    expense_date:        date (required)
+    reason:              string (required)
+    category:            reimbursement category enum (required)
+    project_id:          ObjectId (optional)
+    client_id:           ObjectId (optional)
+    bill_attachment_url: string (optional, valid URL)
+    notes:               string (optional)
+  }
+  Returns:  Created reimbursement record (status = "submitted")
+  Side effects:
+    - Creates reimbursement_review reminder for all HR and Finance users
+      (priority: "high")
+    - If amount >= REIMBURSEMENT_APPROVAL_THRESHOLD (default 10000):
+        → Also creates CRITICAL reminder for all super_admin users
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reimbursements/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reimbursements:read permission
+  Returns:  Single reimbursement with populated employee
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reimbursements/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reimbursements:update permission
+  Body: {
+    expense_title:       string (optional)
+    amount:              number (optional)
+    expense_date:        date (optional)
+    reason:              string (optional)
+    category:            reimbursement category enum (optional)
+    bill_attachment_url: string (optional)
+    notes:               string (optional)
+  }
+  Returns:  Updated reimbursement
+  Note:     General edit. For status workflow, use the specific action endpoints.
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reimbursements/:id/approve
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reimbursements:update permission
+  Body: {
+    notes: string (optional)
+  }
+  Returns:  Updated reimbursement with status = "approved"
+  Logic:
+    - Sets status = "approved"
+    - Sets approved_by = authenticated user's id
+    - Sets approval_date = now
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reimbursements/:id/reject
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reimbursements:update permission
+  Body: {
+    notes: string (optional — rejection reason)
+  }
+  Returns:  Updated reimbursement with status = "rejected"
+  Logic:
+    - Sets status = "rejected"
+    - Sets approved_by = authenticated user's id (who rejected it)
+    - Sets approval_date = now
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reimbursements/:id/pay
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reimbursements:update permission
+  Body: {
+    paid_date: date (required)
+    notes:     string (optional)
+  }
+  Returns:  Updated reimbursement with status = "paid"
+  Conditions:
+    - Should only be called after status = "approved"
+    - Sets paid_date
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/reimbursements/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reimbursements:delete permission
+  Returns:  { message: "Reimbursement deleted" }
+
+
+================================================================================
+25. MODULE: SUBSCRIPTIONS  →  /api/v1/subscriptions
+================================================================================
+
+  Subscription Statuses: active | expiring_soon | expired | cancelled
+  Billing Cycles:        monthly | quarterly | annual
+
+  "Expiring Soon" = renewal_date is within 30 days from today (auto-calculated)
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/subscriptions/expiring-soon
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   subscriptions:read permission
+  Note:     Must be placed BEFORE /:id route (literal route matching)
+  Returns:  List of subscriptions where renewal_date is within next 30 days
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/subscriptions
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   subscriptions:read permission
+  Query params:
+    page:          number
+    limit:         number
+    status:        subscription status enum
+    billing_cycle: monthly | quarterly | annual
+    provider:      string
+  Returns:  Paginated list
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/subscriptions
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   subscriptions:create permission
+  Body: {
+    plan_name:    string (required, max 200 chars)
+    provider:     string (required, max 200 chars)
+    start_date:   date (required)
+    end_date:     date (required)
+    renewal_date: date (required)
+    amount:       number (required, non-negative)
+    billing_cycle: billing cycle enum (required)
+    assigned_to:  string (optional — user ID or username responsible)
+    notes:        string (optional)
+  }
+  Returns:  Created subscription (status defaults to "active")
+  Side effects:
+    - If renewal_date is within 30 days → auto-creates subscription_renewal reminder
+    - created_by set to authenticated user
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/subscriptions/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   subscriptions:read permission
+  Returns:  Single subscription
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/subscriptions/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   subscriptions:update permission
+  Body: {
+    plan_name:    string (optional)
+    provider:     string (optional)
+    start_date:   date (optional)
+    end_date:     date (optional)
+    renewal_date: date (optional)
+    amount:       number (optional)
+    billing_cycle: enum (optional)
+    status:       subscription status enum (optional)
+    assigned_to:  string (optional)
+    notes:        string (optional)
+  }
+  Returns:  Updated subscription
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/subscriptions/:id/renew
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   subscriptions:update permission
+  Body: {
+    end_date:     date (required — new end date)
+    renewal_date: date (required — next renewal date)
+    amount:       number (optional — new amount if changed)
+  }
+  Returns:  Updated subscription
+  Logic:
+    - Updates end_date, renewal_date, optionally amount
+    - Sets status = "active"
+    - Cancels old subscription_renewal reminders, creates new one for new
+      renewal_date (if within 30 days)
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/subscriptions/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   subscriptions:delete permission
+  Returns:  { message: "Subscription deleted" }
+  Side effects:
+    - Cancels all pending reminders for this subscription
+
+
+================================================================================
+26. MODULE: REPORTS  →  /api/v1/reports
+================================================================================
+
+  Report Types: monthly_seo | analytics | campaign | audit | other
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reports
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reports:read permission
+  Query params:
+    page:        number
+    limit:       number
+    client_id:   ObjectId
+    project_id:  ObjectId
+    report_type: report type enum
+    month:       string (filter by month string)
+  Returns:  Paginated list
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/reports
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reports:create permission
+  Body: {
+    client_id:    ObjectId (required)
+    project_id:   ObjectId (optional)
+    report_title: string (required, max 300 chars)
+    report_type:  report type enum (required)
+    month:        date (required — the month this report covers)
+    file_url:     string (required, valid URL)
+  }
+  Returns:  Created report document
+  Note:     uploaded_by auto-set to authenticated user
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reports/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reports:read permission
+  Returns:  Single report with populated client and project
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reports/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reports:update permission
+  Body: {
+    report_title: string (optional)
+    report_type:  enum (optional)
+    month:        date (optional)
+    file_url:     string (optional, valid URL)
+  }
+  Returns:  Updated report
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/reports/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reports:delete permission
+  Returns:  { message: "Report deleted" }
+
+
+================================================================================
+27. MODULE: DASHBOARD  →  /api/v1/dashboard
+================================================================================
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/dashboard/overview
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   dashboard:read permission (all roles have this)
+  Returns:  Role-specific aggregated dashboard data
+
+  The response content varies by role:
+
+  super_admin / admin:
+    - Total counts: leads, clients, projects, employees, revenue
+    - Lead breakdown by stage
+    - Project breakdown by status
+    - Revenue summary (total, received, pending, overdue)
+    - Active subscriptions, expiring subscriptions
+    - Pending salaries count
+    - Pending/under-review reimbursements
+    - Alerts:
+        * Overdue leads (with follow_up_date in the past)
+        * Overdue upcoming payments
+        * Overdue projects (past end_date, status in_progress/not_started)
+        * Subscriptions expiring in ≤30 days
+        * Pending salary records
+        * Large pending reimbursements (above threshold)
+    - Recent reminders (today, overdue, critical, unread count, by-type count)
+
+  sales_manager:
+    - Lead metrics (total, by stage, won/lost this month)
+    - Client metrics (total, by status)
+    - Communication stats
+    - Upcoming follow-ups
+    - Recent reminders
+
+  sales_executive:
+    - Own assigned leads (total, by stage)
+    - Own assigned clients
+    - Own communications log
+    - Own reminders
+
+  project_manager:
+    - Projects summary (total, by status, overdue)
+    - Team worklog hours
+    - Pending reports
+    - Recent reminders
+
+  hr:
+    - Employee summary (total, by status, new this month)
+    - Pending salaries
+    - Pending/under-review reimbursements
+    - Recent reminders
+
+  finance:
+    - Revenue overview (total, received, pending, overdue)
+    - Payment summary
+    - Upcoming payments (by status, overdue)
+    - Active subscriptions, expiring soon
+    - Pending salary disbursements
+    - Pending reimbursements
+    - Recent reminders
+
+  Team Summary (for any role if the user has a linked Employee record):
+    - Assigned projects
+    - Total hours logged this month
+    - Pending/blocked tasks count
+
+
+================================================================================
+28. MODULE: REMINDERS  →  /api/v1/reminders
+================================================================================
+
+  Reminder Types:     lead_followup | client_payment | project_deadline |
+                      salary_due | report_upload | subscription_renewal |
+                      reimbursement_review | communication_followup | custom
+  Reminder Statuses:  pending | done | snoozed | rescheduled | cancelled
+  Reminder Priorities: low | medium | high | critical
+
+  Soft Delete: Reminders use deleted_at field. Deleted reminders are excluded
+               from all queries but remain in the DB for audit.
+
+  Dedup Key: Auto-generated reminders use a dedup_key to prevent duplicates.
+             Format: "<type>|<module>|<record_id>|<date_or_suffix>"
+             Example: "lead_followup|leads|64abc123...|2026-06-10"
+
+  Access Control for individual reminder:
+    - The assignee (assigned_user_id === userId) can always access
+    - super_admin and admin can access all reminders
+    - Role managers can access reminders for their module scope:
+        sales_manager: leads, clients, communications, upcoming-payments
+        project_manager: projects, reports, worklogs
+        hr: salary, reimbursements, employees
+        finance: salary, upcoming-payments, subscriptions, reimbursements, revenue
+
+  Write Access (PATCH operations on individual reminder):
+    - Only the ASSIGNEE can modify their own reminder
+    - super_admin and admin can modify any reminder
+    - Other role managers can READ but NOT WRITE other people's reminders
+
+  Audit History:
+    - Every action (created, updated, read, unread, done, snoozed, rescheduled,
+      deleted) is logged in reminder.audit_history[]
+    - audit_history is only visible to super_admin in GET /:id response
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reminders/stats
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:read permission
+  Returns: {
+    totalCount:    number  (all non-deleted reminders in scope)
+    pendingCount:  number  (status = "pending")
+    overdueCount:  number  (reminder_date < today AND status = pending/rescheduled)
+    dueTodayCount: number  (reminder_date = today)
+    completedCount: number (status = "done")
+    snoozedCount:  number  (status = "snoozed")
+    unreadCount:   number  (is_read = false)
+    criticalCount: number  (priority = "critical" AND status = pending/rescheduled)
+  }
+  Note: Scoped by user role (see record scoping section above)
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reminders/digest-preview
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:read permission
+  Returns:  HTML string — a preview of the daily reminder digest email
+  Note:     Shows pending/overdue reminders for the requesting user
+            Same content as the email that gets sent at 08:00 IST daily
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reminders/my
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:read permission
+  Query params:
+    page:            number
+    limit:           number
+    status:          reminder status enum (or comma-separated values)
+    priority:        reminder priority enum
+    type:            reminder type enum
+    is_read:         boolean
+    date_from:       date
+    date_to:         date
+    sort:            string (sort field, e.g. "reminder_date" or "-reminder_date")
+  Returns:  Paginated reminders assigned ONLY to the current user
+  Note:     Unlike GET /, this ALWAYS filters by assigned_user_id === current user
+            regardless of role (even super_admin)
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reminders
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:read permission
+  Query params:  Same as /my
+  Returns:  Paginated reminders scoped by ROLE:
+              - super_admin, admin: ALL reminders
+              - sales_manager: Reminders for leads, clients, comms, upcoming-payments
+              - project_manager: Reminders for projects, reports, worklogs
+              - hr: Reminders for salary, reimbursements, employees
+              - finance: Reminders for salary, upcoming-payments, subs, reimbursements, revenue
+              - Others: Only own reminders (same as /my)
+
+  ────────────────────────────────────────────────────────────────────────────
+  POST /api/v1/reminders
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:create permission
+  Body: {
+    title:           string (required, max 200 chars)
+    description:     string (optional, max 2000 chars)
+    priority:        reminder priority enum (optional, default: "medium")
+    reminder_date:   date (required)
+    reminder_time:   string (optional, format: "HH:MM")
+    assigned_user_id: ObjectId (required — who this reminder is for)
+  }
+  Returns:  Created reminder document (type = "custom", status = "pending")
+  Side effects:
+    - Creates an in-app notification for the assigned user
+    - Audit entry recorded
+
+  ────────────────────────────────────────────────────────────────────────────
+  GET /api/v1/reminders/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:read permission + individual access check
+  Returns:  Single reminder
+  Conditions:
+    - 403 if requester has no access to this reminder (not assignee, not admin,
+      not a manager for the reminder's module)
+    - audit_history is ONLY included if requester is super_admin
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reminders/:id/read
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:update permission + write access check
+  Body:     none (id in params)
+  Returns:  Updated reminder with is_read = true
+  Side effects:
+    - Also marks the corresponding in-app Notification as read
+    - Audit entry recorded
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reminders/:id/unread
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:update permission + write access check
+  Body:     none
+  Returns:  Updated reminder with is_read = false
+  Note:     Audit entry recorded
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reminders/:id/done
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:update permission + write access check
+  Body:     none
+  Returns:  Updated reminder
+  Logic:
+    - Sets status = "done"
+    - Sets is_read = true
+    - Sets completed_at = now
+    - Sets completed_by = authenticated user's id
+    - Audit entry recorded
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reminders/:id/snooze
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:update permission + write access check
+  Body: {
+    snoozed_until: date (required — when to wake it back up)
+  }
+  Returns:  Updated reminder
+  Logic:
+    - Sets status = "snoozed"
+    - Sets snoozed_until = provided date
+    - Sets is_read = true
+    - Audit entry recorded
+    - The cron job (every 5 minutes) will change status back to "pending"
+      when snoozed_until passes
+
+  ────────────────────────────────────────────────────────────────────────────
+  PATCH /api/v1/reminders/:id/reschedule
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:update permission + write access check
+  Body: {
+    reminder_date: date (required — new date for this reminder)
+    reminder_time: string (optional, format "HH:MM")
+  }
+  Returns:  Updated reminder
+  Logic:
+    - Sets status = "rescheduled"
+    - Updates reminder_date and optionally reminder_time
+    - Audit entry recorded
+
+  ────────────────────────────────────────────────────────────────────────────
+  DELETE /api/v1/reminders/:id
+  ────────────────────────────────────────────────────────────────────────────
+  Access:   reminders:delete permission + write access check
+  Body:     none (id in params)
+  Returns:  { message: "Reminder deleted" }
+  Logic:
+    - SOFT DELETE — sets deleted_at = now
+    - Audit entry recorded
+    - Record remains in DB but is excluded from all queries
+
+
+================================================================================
+29. CRON JOBS (Background Tasks)
+================================================================================
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ Reminder Sync Cron                                                       │
+  │ Schedule: Every 5 minutes  (*/5 * * * *)                                 │
+  │ Source:   src/cron/reminder.cron.ts                                      │
+  └─────────────────────────────────────────────────────────────────────────┘
+  Runs runScheduledReminderSync() which does ALL of the following in parallel:
+
+  1. syncLeadReminders()
+     - Finds all active leads (status=active, stage NOT won/lost) with
+       follow_up_date set
+     - Creates/updates lead_followup reminders
+     - Priority: "high" if overdue, "medium" otherwise
+
+  2. syncProjectReminders()
+     - Finds projects with end_date set, status in [not_started, in_progress, on_hold]
+     - Only triggers when deadline is ≤7 days away
+     - Priority logic:
+         daysLeft < 0:  title = "Project deadline missed"  → CRITICAL
+         daysLeft = 0:  title = "Project deadline is today" → CRITICAL
+         daysLeft ≤ 3:  title = "Project deadline in N days" → HIGH
+         daysLeft ≤ 7:  title = "Project deadline in N days" → MEDIUM
+
+  3. syncPaymentReminders()
+     - Finds upcoming payments with status in [pending, overdue]
+     - Creates/updates client_payment reminders
+     - Priority: "critical" if overdue, "high" otherwise
+     - Assigned to: assigned_follow_up_user or created_by
+
+  4. syncSubscriptionReminders()
+     - Finds active/expiring_soon subscriptions with renewal_date set
+     - Only triggers when ≤30 days to renewal
+     - Priority logic:
+         daysLeft < 0:  "Subscription expired" → CRITICAL
+         daysLeft = 0:  "Subscription renewal is today" → CRITICAL
+         daysLeft ≤ 7:  "Subscription renewing in N days" → HIGH
+         daysLeft ≤ 30: "Subscription renewing in N days" → MEDIUM
+
+  5. syncSalaryReminders()
+     - Triggers only AFTER end-of-previous-month
+     - Finds salary records with status = "pending"
+     - Creates CRITICAL salary_due reminders for Finance + Super Admin users
+
+  6. syncReimbursementReminders()
+     - Finds reimbursements in [submitted, under_review]
+     - Creates reimbursement_review reminders for all HR and Finance users (HIGH)
+     - If amount >= REIMBURSEMENT_APPROVAL_THRESHOLD:
+         Also creates CRITICAL reminder for all Super Admin users
+
+  7. syncCommunicationReminders()
+     - Finds communications with next_follow_up_date set
+     - Creates communication_followup reminders for the communication's user_id
+
+  8. syncReportUploadReminders()
+     - ONLY runs on the 1st day of the month
+     - Checks in_progress/completed projects that have NO report uploaded
+       for the previous month
+     - Creates report_upload reminders (MEDIUM) for project.created_by
+
+  After all syncs:
+  9. cancelStaleSourceReminders()
+     - Cancels pending reminders for won/lost leads
+     - Cancels pending reminders for received/cancelled upcoming payments
+     - Cancels pending reminders for completed/cancelled projects
+     - Cancels pending reminders for expired/cancelled subscriptions
+     - Cancels orphaned communication reminders (no active follow-up date)
+
+  10. wakeSnoozedReminders()
+      - Sets all snoozed reminders back to "pending" when snoozed_until <= now
+
+  11. escalateOverdueReminders()
+      - Finds pending/rescheduled reminders where reminder_date < today
+        AND priority in [low, medium, high]
+      - Sets their priority to "critical"
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ Daily Reminder Digest Cron                                               │
+  │ Schedule: Daily at 08:00 Asia/Kolkata (IST)  (0 8 * * *)                │
+  │ Source:   src/cron/reminder-digest.cron.ts                               │
+  └─────────────────────────────────────────────────────────────────────────┘
+  Runs runDailyReminderDigest() which:
+    - Gathers today's pending + overdue reminders for all active users
+    - Sends a digest email to DAILY_REMINDER_DIGEST_EMAIL (if SMTP configured)
+    - Logs to DailyDigestLog collection per user
+
+
+================================================================================
+30. AUTO-REMINDER SYSTEM (Trigger Conditions)
+================================================================================
+
+  Auto-reminders are created/updated by the system at these trigger points.
+  All use dedup_key to prevent duplicate reminders.
+  Status "done" or "cancelled" reminders are NOT overwritten.
+
+  TRIGGER 1: Lead follow-up date set or changed
+  ─────────────────────────────────────────────
+  When:   PATCH /leads/:id (follow_up_date changes)
+          POST /leads (follow_up_date in body)
+  Action: Cancel existing lead_followup reminders for this lead
+          Create new lead_followup reminder
+  Key:    lead_followup|leads|{leadId}|{YYYY-MM-DD}
+  Assigned to: lead.assigned_user_id
+  Priority: "high" if date is in the past, "medium" otherwise
+
+  TRIGGER 2: Lead closed (won or lost)
+  ────────────────────────────────────
+  When:   PATCH /leads/:id/stage with stage = "won" or "lost"
+  Action: Cancel ALL pending lead_followup reminders for this lead
+
+  TRIGGER 3: Lead converted to client
+  ────────────────────────────────────
+  When:   POST /leads/:id/convert
+  Action: Cancel ALL pending reminders for this lead
+
+  TRIGGER 4: Communication follow-up date set
+  ───────────────────────────────────────────
+  When:   POST /communications (next_follow_up_date in body)
+          PATCH /communications/:id (next_follow_up_date changes)
+  Action: Cancel existing communication_followup reminders for this comm
+          Create new communication_followup reminder
+  Key:    communication_followup|communications|{commId}|{YYYY-MM-DD}
+  Assigned to: communication.user_id (who logged the communication)
+  Priority: "medium"
+
+  TRIGGER 5: Upcoming payment created
+  ────────────────────────────────────
+  When:   POST /upcoming-payments
+  Action: If reminder_date AND assigned_follow_up_user → create client_payment
+          reminder
+  Key:    client_payment|upcoming-payments|{paymentId}|main
+  Priority: "critical" if due_date already past, "high" otherwise
+
+  TRIGGER 6: Upcoming payment received or cancelled
+  ──────────────────────────────────────────────────
+  When:   PATCH /upcoming-payments/:id/receive
+          PATCH /upcoming-payments/:id/cancel
+  Action: Cancel ALL pending client_payment reminders for this payment
+
+  TRIGGER 7: Project completed or cancelled
+  ─────────────────────────────────────────
+  When:   PATCH /projects/:id/status with status = "completed" or "cancelled"
+  Action: Cancel ALL pending project_deadline reminders for this project
+
+  TRIGGER 8: Reimbursement submitted
+  ────────────────────────────────────
+  When:   POST /reimbursements
+  Action: Create reimbursement_review reminders for all HR + Finance users (HIGH)
+          If amount >= REIMBURSEMENT_APPROVAL_THRESHOLD:
+            Create CRITICAL reminders for all Super Admin users
+  Key:    reimbursement_review|reimbursements|{rId}|{approverId}
+          reimbursement_review|reimbursements|{rId}|sa|{adminId}
+
+  PRIORITY ESCALATION (Cron):
+  When:   Every 5 minutes via cron
+  Action: Any pending/rescheduled reminder where reminder_date < today
+          AND priority is low/medium/high → upgraded to "critical"
+
+
+================================================================================
+31. ALL ENUMS / ALLOWED VALUES REFERENCE
+================================================================================
+
+  Lead Stages:           new | contacted | proposal_sent | negotiation | won | lost
+  Lead Statuses:         active | on_hold | unresponsive | dropped
+  Client Statuses:       active | on_hold | churned | prospect
+  Communication Types:   call | email | whatsapp | meeting | video_call
+  Entity Types:          lead | client
+  Project Categories:    web_app | mobile_app | seo | digital_marketing |
+                         social_media | graphic_design | content
+  Project Statuses:      not_started | in_progress | on_hold | completed | cancelled
+  Project Priorities:    low | medium | high | critical
+  Payment Statuses:      unpaid | partially_paid | fully_paid
+  Employee Statuses:     active | on_leave | resigned | terminated
+  Work Statuses:         in_progress | completed | blocked
+  Revenue Types:         one_time | recurring | milestone
+  Revenue Statuses:      pending | partial | received | overdue
+  Payment Methods:       bank_transfer | upi | cash | cheque | card | online
+  Salary Statuses:       pending | paid | on_hold
+  Salary Payment Modes:  bank_transfer | upi | cash | cheque
+  Reimbursement Statuses: submitted | under_review | approved | rejected | paid
+  Reimbursement Categories: travel | meals | office_supplies | software |
+                            client_entertainment | other
+  Report Types:          monthly_seo | analytics | campaign | audit | other
+  Subscription Statuses: active | expiring_soon | expired | cancelled
+  Billing Cycles:        monthly | quarterly | annual
+  Upcoming Payment Types: confirmed | expected
+  Upcoming Payment Statuses: pending | received | overdue | cancelled
+  Reminder Types:        lead_followup | client_payment | project_deadline |
+                         salary_due | report_upload | subscription_renewal |
+                         reimbursement_review | communication_followup | custom
+  Reminder Statuses:     pending | done | snoozed | rescheduled | cancelled
+  Reminder Priorities:   low | medium | high | critical
+  User Statuses:         active | inactive | suspended
+  Notification Channels: in_app | email | whatsapp | push
+  Modules:               users | roles | leads | clients | communications |
+                         reminders | projects | employees | worklogs | revenue |
+                         payments | salary | reimbursements | reports |
+                         subscriptions | dashboard | forecasting
+
+
+================================================================================
+32. ERROR HANDLING & RESPONSE FORMAT
+================================================================================
+
+  All successful responses follow this format:
+  {
+    "success": true,
+    "message": "...",
+    "data": { ... }  or  [ ... ]  or  { items: [...], total: N, page: N, limit: N }
+  }
+
+  All error responses follow this format:
+  {
+    "success": false,
+    "message": "Human-readable error message",
+    "errors": [ ... ]  (optional, for validation errors)
+  }
+
+  HTTP Status Codes Used:
+  ──────────────────────
+  200 OK                    Successful GET, PATCH, DELETE
+  201 Created               Successful POST (resource created)
+  400 Bad Request           Business logic violation (e.g. lead not won)
+  401 Unauthorized          Missing or invalid authentication token
+  403 Forbidden             Valid token but insufficient permissions
+  404 Not Found             Resource not found
+  409 Conflict              Duplicate key (email, salary month/year, etc.)
+  422 Unprocessable Entity  Zod validation failed (with errors array)
+  429 Too Many Requests     Rate limit exceeded
+  500 Internal Server Error Unexpected server error
+
+  Specific error cases:
+  ─────────────────────
+  401 "Authentication token required"   — No Bearer token in header
+  401 "Invalid or expired token"        — Token expired or tampered
+  401 "Invalid credentials"             — Wrong email or password
+  403 "Account is not active"           — User status is inactive/suspended
+  403 "Access denied: role not permitted"    — requireRole check failed
+  403 "Access denied: insufficient permission for <module>:<action>"
+                                        — requirePermission check failed
+  403 "Cannot delete your own account"  — Tried to DELETE self
+  403 "Cannot change your own status"   — Tried to PATCH own status
+  403 "Only the assignee can modify this reminder"
+  400 "Lead must be in 'won' stage to convert"
+  400 "Cannot set status to in_progress without assigned employees and end date"
+  409 "Email already exists"
+  409 "Salary record already exists for this employee, month and year"
+
+  In development mode: full error stack trace is returned in the response.
+  In production mode: only the message is returned (no internals leaked).
+
+
+================================================================================
+33. SECURITY FEATURES SUMMARY
+================================================================================
+
+  1. JWT Authentication
+     - Stateless Bearer tokens, no sessions
+     - Access token: 15 minutes
+     - Refresh token: 7 days
+     - Separate secrets for access and refresh tokens
+
+  2. Role-Based Access Control (RBAC)
+     - 7 system roles with fixed permissions
+     - Custom roles supported
+     - requireRole() checks exact role names
+     - requirePermission() checks module:action granularity
+
+  3. Per-User Permission Overrides
+     - super_admin can grant/revoke specific module:actions per user
+     - Overrides take priority over role defaults
+
+  4. Record-Level Scoping
+     - sales_executive only sees their own leads/clients/communications
+     - Worklog access limited to own employee record for lower roles
+
+  5. Data Encryption
+     - AES-256-GCM encryption for employee bank fields (account_number, upi_id)
+     - Random IV per field per encrypt operation
+     - ENCRYPTION_KEY stored as environment variable (never in code)
+     - Masked display (****1234) for non-privileged users
+
+  6. Password Security
+     - bcrypt with cost factor 12
+     - Password never returned in any response
+
+  7. Rate Limiting
+     - 100 requests per 15 minutes globally
+     - In-memory (per-process) — for production, use Redis-backed limiter
+
+  8. HTTP Security Headers (Helmet)
+     - Content-Security-Policy
+     - X-XSS-Protection
+     - X-Frame-Options
+     - Strict-Transport-Security
+     - X-Content-Type-Options
+
+  9. CORS
+     - Restricted to CORS_ORIGIN (default: localhost:3000)
+     - Credentials allowed
+
+  10. Input Validation (Zod)
+      - All request bodies, params, and query strings validated
+      - Invalid inputs rejected at middleware level before reaching controllers
+
+  11. Audit Logging
+      - Login attempts (success/failure) logged with IP + user agent
+      - All reminder actions logged with actor, timestamp, old/new values
+
+
+================================================================================
+34. DATABASE COLLECTIONS SUMMARY
+================================================================================
+
+  Collection          Key Fields                         Notes
+  ─────────────────────────────────────────────────────────────────────────────
+  users               email (unique), name, password (hashed), role_id, status
+  roles               name (unique), permissions map, is_system flag
+  access_controls     user_id (unique), module_permissions
+  login_audits        user_id, ip_address, user_agent, login_at, status
+  leads               lead_name, stage, status, assigned_user_id, follow_up_date,
+                      history[], client_id (after convert)
+  clients             company_name, assigned_manager_id, source_lead_id
+  communications      entity_type, entity_id, user_id, type, next_follow_up_date
+  projects            project_name, client_id, status, end_date,
+                      assigned_employees[], created_by
+  employees           user_id (sparse unique), full_name, department,
+                      salary, bank fields (encrypted), status
+  worklogs            employee_id, project_id, date, task_title, time_spent_hours
+  revenues            client_id, project_id, amount, status, type
+  payments            revenue_id, client_id, amount, payment_method
+  upcoming_payments   client_id, due_date, payment_status, assigned_follow_up_user
+  salaries            employee_id, month, year (compound unique), status, net_salary
+  reimbursements      employee_id, amount, status, category
+  subscriptions       plan_name, renewal_date, status
+  reports             client_id, project_id, report_type, month, file_url
+  reminders           type, status, priority, assigned_user_id, reminder_date,
+                      dedup_key (partial unique), deleted_at (soft delete),
+                      audit_history[], related_module, related_record_id
+  notifications       user_id, reminder_id, is_read, channel
+  daily_digest_logs   user_id, digest_date, reminder_count
+
+================================================================================
+END OF DOCUMENT
+================================================================================

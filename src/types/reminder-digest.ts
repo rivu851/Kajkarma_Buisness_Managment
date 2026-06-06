@@ -1,9 +1,12 @@
-import type { ReminderPriority } from '../constants/enums.js';
-
 export interface DigestReminderItem {
   title: string;
   dueDate: string;
   module: string;
+}
+
+export interface DigestAlertItem {
+  title: string;
+  description: string;
 }
 
 export interface DigestSummary {
@@ -15,6 +18,7 @@ export interface DigestSummary {
 }
 
 export interface ReminderDigestPayload {
+  alerts: DigestAlertItem[];
   overdue: DigestReminderItem[];
   dueToday: DigestReminderItem[];
   upcoming: DigestReminderItem[];

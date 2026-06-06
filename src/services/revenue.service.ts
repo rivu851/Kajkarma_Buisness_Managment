@@ -5,6 +5,10 @@ import {
   updateRevenueById,
   deleteRevenueById,
 } from '../repositories/revenue.repository.js';
+import {
+  createUpcomingPayment,
+  deleteUpcomingPaymentsByRevenueId,
+} from '../repositories/upcoming_payment.repository.js';
 import { clientExists } from '../repositories/client.repository.js';
 import { projectExists } from '../repositories/project.repository.js';
 import { AppError } from '../utils/AppError.js';
@@ -68,7 +72,22 @@ export async function createNewRevenue(
     created_by: toObjectId(user.userId),
   } as Partial<IRevenue>);
 
-  return (await findRevenueById(revenue._id))!;
+  const populated = (await findRevenueById(revenue._id))!;
+
+  if (populated.due_date) {
+    await createUpcomingPayment({
+      client_id: populated.client_id,
+      revenue_id: populated._id,
+      amount: populated.amount,
+      due_date: populated.due_date,
+      payment_type: 'confirmed',
+      payment_status: 'pending',
+      created_by: populated.created_by,
+      ...(populated.project_id ? { project_id: populated.project_id } : {}),
+    });
+  }
+
+  return populated;
 }
 
 export async function updateRevenue(id: string, data: Partial<IRevenue>): Promise<IRevenue> {
@@ -93,6 +112,7 @@ export async function removeRevenue(id: string): Promise<void> {
   if (existing.received_amount > 0) {
     throw new AppError('Cannot delete revenue with recorded payments', 422);
   }
+  await deleteUpcomingPaymentsByRevenueId(id);
   await deleteRevenueById(id);
 }
 

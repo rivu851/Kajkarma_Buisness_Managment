@@ -698,6 +698,7 @@ export async function fetchAlertCandidates(options: AlertFetchOptions): Promise<
         ...(scope.lead ?? {}),
         follow_up_date: { $lt: todayStart },
         status: 'active',
+        stage: { $nin: ['won', 'lost'] },
       })
         .limit(5)
         .select('lead_name')

@@ -92,6 +92,27 @@ export async function findUsersByRoleId(roleId: string | Types.ObjectId): Promis
   return User.find({ role_id: roleId }).lean();
 }
 
+export async function findAllActiveUsersWithRoles(): Promise<
+  Array<{ _id: Types.ObjectId; email: string; roleName: string; roleId: string }>
+> {
+  const users = await User.find({ status: 'active' })
+    .populate<{ role_id: { _id: Types.ObjectId; name: string } }>({ path: 'role_id', select: 'name' })
+    .select('email role_id')
+    .lean();
+
+  return users
+    .filter((u) => u.role_id && typeof (u.role_id as unknown as { name?: string }).name === 'string')
+    .map((u) => {
+      const role = u.role_id as unknown as { _id: Types.ObjectId; name: string };
+      return {
+        _id: u._id as Types.ObjectId,
+        email: u.email,
+        roleName: role.name,
+        roleId: role._id.toString(),
+      };
+    });
+}
+
 export async function findAccessControl(userId: string | Types.ObjectId): Promise<IAccessControl | null> {
   return AccessControl.findOne({ user_id: userId }).lean();
 }

@@ -18,6 +18,12 @@ export const listEmployeesSchema = z.object({
   }),
 });
 
+const createUserAccountSchema = z.object({
+  email: z.email('Invalid email for user account'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  role_id: objectIdSchema,
+});
+
 export const createEmployeeSchema = z.object({
   body: z
     .object({
@@ -32,6 +38,7 @@ export const createEmployeeSchema = z.object({
       salary: z.number().min(0).optional(),
       pending_salary: z.number().min(0).optional(),
       status: z.enum(EMPLOYEE_STATUSES).optional(),
+      create_user_account: createUserAccountSchema.optional(),
     })
     .merge(bankFieldsSchema),
 });

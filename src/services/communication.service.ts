@@ -140,13 +140,17 @@ export async function updateCommunication(
 
   const updated = await updateCommunicationById(id, data);
   if (!updated) throw new AppError('Communication not found', 404);
+
+  const { onCommunicationFollowUp, closePendingRemindersForRecord } = await import('./reminder.service.js');
   if (updated.next_follow_up_date) {
-    const { onCommunicationFollowUp } = await import('./reminder.service.js');
     void onCommunicationFollowUp(
       updated._id as import('mongoose').Types.ObjectId,
       updated.next_follow_up_date,
       updated.user_id as import('mongoose').Types.ObjectId
     ).catch(() => undefined);
+  } else if ('next_follow_up_date' in data && data.next_follow_up_date == null) {
+    void closePendingRemindersForRecord('communications', updated._id as import('mongoose').Types.ObjectId)
+      .catch(() => undefined);
   }
   return updated;
 }
@@ -157,4 +161,7 @@ export async function removeCommunication(id: string, user: JwtPayload): Promise
   assertCommunicationRecordAccess(existing, user);
   const deleted = await deleteCommunicationById(id);
   if (!deleted) throw new AppError('Communication not found', 404);
+  const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+  void closePendingRemindersForRecord('communications', existing._id as import('mongoose').Types.ObjectId)
+    .catch(() => undefined);
 }

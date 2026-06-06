@@ -51,7 +51,22 @@ export async function updateCommunicationById(
   id: string | Types.ObjectId,
   data: Partial<ICommunication>
 ): Promise<ICommunication | null> {
-  return Communication.findByIdAndUpdate(id, { $set: data }, { new: true, runValidators: true })
+  const setFields: Record<string, unknown> = {};
+  const unsetFields: Record<string, 1> = {};
+
+  for (const [key, value] of Object.entries(data)) {
+    if (value === null || value === undefined) {
+      unsetFields[key] = 1;
+    } else {
+      setFields[key] = value;
+    }
+  }
+
+  const update: Record<string, unknown> = {};
+  if (Object.keys(setFields).length) update['$set'] = setFields;
+  if (Object.keys(unsetFields).length) update['$unset'] = unsetFields;
+
+  return Communication.findByIdAndUpdate(id, update, { new: true, runValidators: true })
     .populate('user_id', 'name email')
     .lean();
 }

@@ -11,7 +11,7 @@ import { Employee } from '../models/employee.model.js';
 import { findRoleByName } from '../repositories/role.repository.js';
 import { findUsersByRoleId } from '../repositories/user.repository.js';
 import { SYSTEM_ROLES } from '../constants/roles.js';
-import { startOfDay, addDays, endOfMonth, monthKey } from '../utils/dateRanges.js';
+import { startOfDay, endOfMonth, monthKey } from '../utils/dateRanges.js';
 import { toObjectId } from '../utils/recordScope.js';
 import {
   upsertAutoReminder,
@@ -19,20 +19,11 @@ import {
   wakeSnoozedReminders,
   closePendingRemindersForRecord,
 } from './reminder.service.js';
+import {
+  cancelOrphanRemindersForModule,
+  cancelReminderByDedupKey,
+} from '../repositories/reminder.repository.js';
 import type { ReminderPriority } from '../constants/enums.js';
-
-const PROJECT_MILESTONES = [
-  { key: '7d', days: 7, priority: 'high' as ReminderPriority },
-  { key: '3d', days: 3, priority: 'high' as ReminderPriority },
-  { key: '1d', days: 1, priority: 'high' as ReminderPriority },
-  { key: '0d', days: 0, priority: 'critical' as ReminderPriority },
-] as const;
-
-const SUBSCRIPTION_MILESTONES = [
-  { key: '30d', days: 30, priority: 'medium' as ReminderPriority },
-  { key: '7d', days: 7, priority: 'medium' as ReminderPriority },
-  { key: '1d', days: 1, priority: 'high' as ReminderPriority },
-] as const;
 
 async function financeAndAdminUserIds(): Promise<Types.ObjectId[]> {
   const ids: Types.ObjectId[] = [];
@@ -56,26 +47,37 @@ async function superAdminUserIds(): Promise<Types.ObjectId[]> {
 
 const OBJECT_ID_HEX = /^[0-9a-fA-F]{24}$/;
 
-/** Milestone is due when its trigger day (UTC) is today or in the past. */
-function isMilestoneDue(triggerDate: Date, today: Date): boolean {
-  return startOfDay(triggerDate).getTime() <= today.getTime();
-}
-
-/**
- * Project reminder assignee — schema has no project_manager field.
- * Fallback: created_by (project owner) → first assigned_employee.user_id.
- */
-async function resolveProjectReminderAssignee(project: {
+async function resolveAllProjectUserIds(project: {
   created_by?: Types.ObjectId;
   assigned_employees?: Types.ObjectId[];
-}): Promise<Types.ObjectId | null> {
-  if (project.created_by) return project.created_by as Types.ObjectId;
-  const firstEmployeeId = project.assigned_employees?.[0];
-  if (firstEmployeeId) {
-    const emp = await Employee.findById(firstEmployeeId).select('user_id').lean();
-    if (emp?.user_id) return emp.user_id as Types.ObjectId;
+}): Promise<Types.ObjectId[]> {
+  const seen = new Set<string>();
+  const userIds: Types.ObjectId[] = [];
+
+  if (project.created_by) {
+    seen.add(project.created_by.toString());
+    userIds.push(project.created_by as Types.ObjectId);
   }
-  return null;
+
+  if (project.assigned_employees?.length) {
+    const employees = await Employee.find({
+      _id: { $in: project.assigned_employees },
+      user_id: { $exists: true, $ne: null },
+    })
+      .select('user_id')
+      .lean();
+
+    for (const emp of employees) {
+      if (!emp.user_id) continue;
+      const key = emp.user_id.toString();
+      if (!seen.has(key)) {
+        seen.add(key);
+        userIds.push(emp.user_id as Types.ObjectId);
+      }
+    }
+  }
+
+  return userIds;
 }
 
 function resolveSubscriptionAssignee(
@@ -93,12 +95,15 @@ function resolveSubscriptionAssignee(
 }
 
 async function cancelStaleSourceReminders(): Promise<void> {
-  const [closedLeads, closedPayments, closedProjects, closedSubs] = await Promise.all([
+  const [closedLeads, closedPayments, closedProjects, closedSubs, activeComms] = await Promise.all([
     Lead.find({ stage: { $in: ['won', 'lost'] } }).select('_id').lean(),
     UpcomingPayment.find({ payment_status: { $in: ['received', 'cancelled'] } }).select('_id').lean(),
     Project.find({ status: { $in: ['completed', 'cancelled'] } }).select('_id').lean(),
     Subscription.find({ status: { $in: ['expired', 'cancelled'] } }).select('_id').lean(),
+    Communication.find({ next_follow_up_date: { $exists: true, $ne: null } }).select('_id').lean(),
   ]);
+
+  const activeCommIds = activeComms.map((c) => c._id as Types.ObjectId);
 
   await Promise.all([
     ...closedLeads.map((l) => closePendingRemindersForRecord('leads', l._id as Types.ObjectId)),
@@ -107,6 +112,7 @@ async function cancelStaleSourceReminders(): Promise<void> {
     ),
     ...closedProjects.map((p) => closePendingRemindersForRecord('projects', p._id as Types.ObjectId)),
     ...closedSubs.map((s) => closePendingRemindersForRecord('subscriptions', s._id as Types.ObjectId)),
+    cancelOrphanRemindersForModule('communications', activeCommIds),
   ]);
 }
 
@@ -152,41 +158,44 @@ export async function syncProjectReminders(): Promise<void> {
 
   for (const project of projects) {
     if (!project.end_date) continue;
-    const assignee = await resolveProjectReminderAssignee(project);
-    if (!assignee) continue;
 
     const end = startOfDay(project.end_date);
+    const daysLeft = Math.round((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-    if (end.getTime() < today.getTime()) {
-      await upsertAutoReminder({
-        dedup_key: `project_deadline|projects|${project._id}|overdue`,
-        type: 'project_deadline',
-        title: 'Project deadline missed',
-        description: `${project.project_name} is overdue`,
-        priority: 'critical',
-        related_module: 'projects',
-        related_record_id: project._id as Types.ObjectId,
-        assigned_user_id: assignee,
-        reminder_date: end,
-        created_by: assignee,
-      });
-      continue;
+    if (daysLeft > 7) continue;
+
+    let title: string;
+    let priority: ReminderPriority;
+
+    if (daysLeft < 0) {
+      title = 'Project deadline missed';
+      priority = 'critical';
+    } else if (daysLeft === 0) {
+      title = 'Project deadline is today';
+      priority = 'critical';
+    } else {
+      title = `Project deadline in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`;
+      priority = daysLeft <= 3 ? 'high' : 'medium';
     }
 
-    for (const m of PROJECT_MILESTONES) {
-      const triggerDate = addDays(end, -m.days);
-      if (!isMilestoneDue(triggerDate, today)) continue;
+    // Cancel the old single-assignee reminder (dedup_key ending in |main) if still active
+    await cancelReminderByDedupKey(`project_deadline|projects|${project._id}|main`);
+
+    const userIds = await resolveAllProjectUserIds(project);
+    if (userIds.length === 0) continue;
+
+    for (const userId of userIds) {
       await upsertAutoReminder({
-        dedup_key: `project_deadline|projects|${project._id}|${m.key}`,
+        dedup_key: `project_deadline|projects|${project._id}|${userId}`,
         type: 'project_deadline',
-        title: `Project deadline in ${m.key === '0d' ? 'today' : m.key.replace('d', ' days')}`,
+        title,
         description: `${project.project_name} ends on ${end.toISOString().slice(0, 10)}`,
-        priority: m.priority,
+        priority,
         related_module: 'projects',
         related_record_id: project._id as Types.ObjectId,
-        assigned_user_id: assignee,
-        reminder_date: triggerDate,
-        created_by: assignee,
+        assigned_user_id: userId,
+        reminder_date: end,
+        created_by: (project.created_by ?? userId) as Types.ObjectId,
       });
     }
   }
@@ -242,39 +251,36 @@ export async function syncSubscriptionReminders(): Promise<void> {
     if (!assignee) continue;
 
     const renewal = startOfDay(sub.renewal_date);
+    const daysLeft = Math.round((renewal.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-    if (renewal.getTime() < today.getTime()) {
-      await upsertAutoReminder({
-        dedup_key: `subscription_renewal|subscriptions|${sub._id}|expired`,
-        type: 'subscription_renewal',
-        title: 'Subscription expired',
-        description: `${sub.plan_name} requires renewal`,
-        priority: 'critical',
-        related_module: 'subscriptions',
-        related_record_id: sub._id as Types.ObjectId,
-        assigned_user_id: assignee,
-        reminder_date: renewal,
-        created_by: assignee,
-      });
-      continue;
+    if (daysLeft > 30) continue;
+
+    let title: string;
+    let priority: ReminderPriority;
+
+    if (daysLeft < 0) {
+      title = 'Subscription expired';
+      priority = 'critical';
+    } else if (daysLeft === 0) {
+      title = 'Subscription renewal is today';
+      priority = 'critical';
+    } else {
+      title = `Subscription renewing in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`;
+      priority = daysLeft <= 7 ? 'high' : 'medium';
     }
 
-    for (const m of SUBSCRIPTION_MILESTONES) {
-      const triggerDate = addDays(renewal, -m.days);
-      if (!isMilestoneDue(triggerDate, today)) continue;
-      await upsertAutoReminder({
-        dedup_key: `subscription_renewal|subscriptions|${sub._id}|${m.key}`,
-        type: 'subscription_renewal',
-        title: `Subscription renewing in ${m.key.replace('d', ' days')}`,
-        description: `${sub.plan_name} renews on ${renewal.toISOString().slice(0, 10)}`,
-        priority: m.priority,
-        related_module: 'subscriptions',
-        related_record_id: sub._id as Types.ObjectId,
-        assigned_user_id: assignee,
-        reminder_date: triggerDate,
-        created_by: assignee,
-      });
-    }
+    await upsertAutoReminder({
+      dedup_key: `subscription_renewal|subscriptions|${sub._id}|main`,
+      type: 'subscription_renewal',
+      title,
+      description: `${sub.plan_name} renews on ${renewal.toISOString().slice(0, 10)}`,
+      priority,
+      related_module: 'subscriptions',
+      related_record_id: sub._id as Types.ObjectId,
+      assigned_user_id: assignee,
+      reminder_date: renewal,
+      created_by: assignee,
+    });
   }
 }
 
@@ -401,7 +407,7 @@ export async function syncReportUploadReminders(): Promise<void> {
   const projects = await Project.find({
     status: { $in: ['in_progress', 'completed'] },
   })
-    .select('project_name created_by')
+    .select('project_name created_by assigned_employees')
     .lean();
 
   for (const project of projects) {
@@ -412,18 +418,23 @@ export async function syncReportUploadReminders(): Promise<void> {
     });
     if (hasReport) continue;
 
-    await upsertAutoReminder({
-      dedup_key: `report_upload|reports|${project._id}|${label}`,
-      type: 'report_upload',
-      title: 'Monthly report upload due',
-      description: `Upload report for ${project.project_name} (${label})`,
-      priority: 'medium',
-      related_module: 'reports',
-      related_record_id: project._id as Types.ObjectId,
-      assigned_user_id: project.created_by as Types.ObjectId,
-      reminder_date: startOfDay(now),
-      created_by: project.created_by as Types.ObjectId,
-    });
+    const userIds = await resolveAllProjectUserIds(project);
+    if (userIds.length === 0) continue;
+
+    for (const userId of userIds) {
+      await upsertAutoReminder({
+        dedup_key: `report_upload|reports|${project._id}|${label}|${userId}`,
+        type: 'report_upload',
+        title: 'Monthly report upload due',
+        description: `Upload report for ${project.project_name} (${label})`,
+        priority: 'medium',
+        related_module: 'reports',
+        related_record_id: project._id as Types.ObjectId,
+        assigned_user_id: userId,
+        reminder_date: startOfDay(now),
+        created_by: project.created_by as Types.ObjectId,
+      });
+    }
   }
 }
 

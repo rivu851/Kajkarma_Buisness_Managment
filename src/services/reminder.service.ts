@@ -12,6 +12,7 @@ import {
   aggregateRemindersByType,
   cancelPendingRemindersForRecord,
   cancelActiveLeadFollowUpReminders,
+  cancelActiveCommunicationFollowUpReminders,
 } from '../repositories/reminder.repository.js';
 import { findUserById } from '../repositories/user.repository.js';
 import { AppError } from '../utils/AppError.js';
@@ -433,6 +434,7 @@ export async function onCommunicationFollowUp(
   followUpDate: Date,
   userId: Types.ObjectId
 ): Promise<void> {
+  await cancelActiveCommunicationFollowUpReminders(commId);
   const dateKey = startOfDay(followUpDate).toISOString().slice(0, 10);
   await upsertAutoReminder({
     dedup_key: `communication_followup|communications|${commId}|${dateKey}`,

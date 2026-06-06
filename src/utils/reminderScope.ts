@@ -3,11 +3,6 @@ import { SYSTEM_ROLES } from '../constants/roles.js';
 import type { ReminderModule } from '../constants/enums.js';
 import { toObjectId } from './recordScope.js';
 
-const FULL_ACCESS = new Set<string>([
-  SYSTEM_ROLES.SUPER_ADMIN,
-  SYSTEM_ROLES.ADMIN,
-]);
-
 const MODULE_SCOPE: Partial<Record<string, ReminderModule[]>> = {
   [SYSTEM_ROLES.SALES_MANAGER]: ['leads', 'clients', 'communications', 'upcoming-payments'],
   [SYSTEM_ROLES.PROJECT_MANAGER]: ['projects', 'reports', 'worklogs'],
@@ -23,10 +18,6 @@ const MODULE_SCOPE: Partial<Record<string, ReminderModule[]>> = {
 
 export function reminderListScope(user: JwtPayload): Record<string, unknown> {
   const notDeleted = { deleted_at: { $exists: false } };
-
-  if (FULL_ACCESS.has(user.roleName)) {
-    return notDeleted;
-  }
 
   const modules = MODULE_SCOPE[user.roleName];
   if (modules) {

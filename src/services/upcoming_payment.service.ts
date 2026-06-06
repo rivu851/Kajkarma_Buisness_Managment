@@ -157,8 +157,11 @@ export async function markUpcomingPaymentReceived(
   if (!updated) throw new AppError('Upcoming payment not found', 404);
 
   // Sync linked revenue record if present
+  // revenue_id is populated by findUpcomingPaymentById, so extract ._id from the subdocument
   if (existing.revenue_id) {
-    await syncLinkedRevenue(existing.revenue_id.toString(), existing.amount);
+    const revenueId = (existing.revenue_id as unknown as { _id: import('mongoose').Types.ObjectId })._id
+      ?? existing.revenue_id;
+    await syncLinkedRevenue(revenueId.toString(), existing.amount);
   }
 
   const saved = (await findUpcomingPaymentById(id))!;

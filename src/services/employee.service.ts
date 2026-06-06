@@ -7,6 +7,7 @@ import {
   deleteEmployeeById,
 } from '../repositories/employee.repository.js';
 import { findUserById } from '../repositories/user.repository.js';
+import { createNewUser } from './user.service.js';
 import { AppError } from '../utils/AppError.js';
 import {
   encryptField,
@@ -113,22 +114,43 @@ export async function getEmployeeById(
   return formatEmployeeForUser(employee, user);
 }
 
+type CreateUserAccount = { email: string; password: string; role_id: string };
+type CreateEmployeeBody = Partial<IEmployee> & { create_user_account?: CreateUserAccount };
+
 export async function createNewEmployee(
-  data: Partial<IEmployee>,
+  data: CreateEmployeeBody,
   user: JwtPayload
 ): Promise<Record<string, unknown>> {
-  if (data.user_id) {
-    const linkedUser = await findUserById(data.user_id.toString());
+  const { create_user_account, ...employeeData } = data;
+
+  if (create_user_account && employeeData.user_id) {
+    throw new AppError('Cannot provide both user_id and create_user_account', 400);
+  }
+
+  if (create_user_account) {
+    const newUser = await createNewUser(
+      {
+        name: employeeData.full_name ?? '',
+        email: create_user_account.email,
+        password: create_user_account.password,
+        role_id: create_user_account.role_id,
+        source: 'employee_onboarding',
+      },
+      user
+    );
+    employeeData.user_id = newUser._id;
+  } else if (employeeData.user_id) {
+    const linkedUser = await findUserById(employeeData.user_id.toString());
     if (!linkedUser) throw new AppError('Linked user not found', 404);
-    const existing = await findEmployeeByUserId(data.user_id.toString());
+    const existing = await findEmployeeByUserId(employeeData.user_id.toString());
     if (existing) throw new AppError('User already linked to an employee', 409);
   }
 
   const payload = encryptBankFields(
     omitUndefined({
-      ...data,
-      pending_salary: data.pending_salary ?? 0,
-      ...(data.user_id ? { user_id: toObjectId(data.user_id.toString()) } : {}),
+      ...employeeData,
+      pending_salary: employeeData.pending_salary ?? 0,
+      ...(employeeData.user_id ? { user_id: toObjectId(employeeData.user_id.toString()) } : {}),
     }) as Partial<IEmployee>
   );
 

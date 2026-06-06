@@ -95,3 +95,13 @@ export async function findOverdueUpcomingPayments(): Promise<IUpcomingPayment[]>
     due_date: { $lt: new Date() },
   }).lean();
 }
+
+export async function deleteUpcomingPaymentsByRevenueId(
+  revenueId: string | Types.ObjectId
+): Promise<number> {
+  const result = await UpcomingPayment.deleteMany({
+    revenue_id: revenueId,
+    payment_status: { $ne: 'received' },
+  });
+  return result.deletedCount ?? 0;
+}

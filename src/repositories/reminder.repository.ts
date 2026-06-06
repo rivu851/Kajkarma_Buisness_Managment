@@ -175,6 +175,49 @@ export async function cancelActiveLeadFollowUpReminders(
   );
 }
 
+/** Cancel all active communication follow-up reminders for a communication (e.g. before rescheduling next_follow_up_date). */
+export async function cancelActiveCommunicationFollowUpReminders(
+  commId: Types.ObjectId
+): Promise<void> {
+  await Reminder.updateMany(
+    {
+      type: 'communication_followup',
+      related_module: 'communications',
+      related_record_id: commId,
+      status: { $in: ACTIVE_REMINDER_STATUSES },
+      deleted_at: { $exists: false },
+    },
+    { $set: { status: 'cancelled' as ReminderStatus }, $unset: { dedup_key: '' } }
+  );
+}
+
+export async function cancelReminderByDedupKey(dedupKey: string): Promise<void> {
+  await Reminder.updateOne(
+    {
+      dedup_key: dedupKey,
+      status: { $in: ACTIVE_REMINDER_STATUSES },
+      deleted_at: { $exists: false },
+    },
+    { $set: { status: 'cancelled' as ReminderStatus }, $unset: { dedup_key: '' } }
+  );
+}
+
+/** Cancel active reminders for a module whose related_record_id is no longer in existingIds. */
+export async function cancelOrphanRemindersForModule(
+  relatedModule: ReminderModule,
+  existingIds: Types.ObjectId[]
+): Promise<void> {
+  await Reminder.updateMany(
+    {
+      related_module: relatedModule,
+      related_record_id: { $exists: true, $nin: existingIds },
+      status: { $in: ACTIVE_REMINDER_STATUSES },
+      deleted_at: { $exists: false },
+    },
+    { $set: { status: 'cancelled' as ReminderStatus }, $unset: { dedup_key: '' } }
+  );
+}
+
 export async function aggregateReminderStats(
   scope: Record<string, unknown>
 ): Promise<ReminderStats> {

@@ -2,13 +2,28 @@ import type { Types } from 'mongoose';
 import { Reminder } from '../models/reminder.model.js';
 import type { IReminder } from '../types/reminder.js';
 import type { ReminderPriority } from '../constants/enums.js';
-import { findUserByEmail } from '../repositories/user.repository.js';
+import type { JwtPayload } from '../types/index.js';
 import { digestAlreadySent, recordDigestSent } from '../repositories/daily-digest-log.repository.js';
+import { findAllActiveUsersWithRoles } from '../repositories/user.repository.js';
+import { fetchAlertCandidates } from '../repositories/dashboard.repository.js';
+import { reminderMyScope } from '../utils/reminderScope.js';
+import {
+  resolveEffectivePermissions,
+  canReadModule,
+  canViewSalaryMetrics,
+  isTeamDashboardRole,
+} from '../utils/resolvePermissions.js';
+import { leadListScope, clientListScope, projectListScope } from '../utils/recordScope.js';
+import { SYSTEM_ROLES } from '../constants/roles.js';
 import { sendPlainEmail } from './email.service.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { getIstDateKey, getIstDayBounds, formatDateInIst } from '../utils/istDayBounds.js';
-import type { DigestReminderItem, ReminderDigestPayload } from '../types/reminder-digest.js';
+import type {
+  DigestReminderItem,
+  DigestAlertItem,
+  ReminderDigestPayload,
+} from '../types/reminder-digest.js';
 
 const ACTIVE_STATUSES = ['pending', 'snoozed', 'rescheduled'] as const;
 
@@ -38,15 +53,76 @@ function sortByPriority(a: IReminder, b: IReminder): number {
   return PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
 }
 
-export async function fetchActiveRemindersForDigest(): Promise<IReminder[]> {
+export async function fetchActiveRemindersForDigest(
+  scope: Record<string, unknown> = {}
+): Promise<IReminder[]> {
   const rows = await Reminder.find({
+    ...scope,
     status: { $in: ACTIVE_STATUSES },
-    deleted_at: { $exists: false },
   })
     .sort({ reminder_date: 1 })
     .lean();
 
   return rows as IReminder[];
+}
+
+async function buildDigestAlerts(user: JwtPayload): Promise<DigestAlertItem[]> {
+  const permissions = await resolveEffectivePermissions(user);
+  const can = (mod: Parameters<typeof canReadModule>[1]) =>
+    user.roleName === SYSTEM_ROLES.SUPER_ADMIN || canReadModule(permissions, mod);
+  const teamView = isTeamDashboardRole(user.roleName);
+
+  const scope = {
+    lead: leadListScope(user),
+    client: clientListScope(user),
+    project: projectListScope(user, null),
+    upcomingPayment:
+      user.roleName === SYSTEM_ROLES.SALES_EXECUTIVE
+        ? { assigned_follow_up_user: new (await import('mongoose')).default.Types.ObjectId(user.userId) }
+        : {},
+  };
+
+  const candidates = await fetchAlertCandidates({
+    scope,
+    includeLeadAlerts: can('leads'),
+    includePaymentAlerts: can('payments') && !teamView,
+    includeProjectAlerts: can('projects'),
+    includeSalaryAlerts: canViewSalaryMetrics(user.roleName) && can('salary'),
+    includeReimbursementAlerts: can('reimbursements'),
+    includeSubscriptionAlerts: can('subscriptions') && !teamView,
+  });
+
+  const alerts: DigestAlertItem[] = [];
+
+  for (const lead of candidates.overdueLeads) {
+    alerts.push({ title: 'Lead follow-up overdue', description: lead.lead_name });
+  }
+  for (const payment of candidates.overduePayments) {
+    alerts.push({ title: 'Client payment overdue', description: `Outstanding: ${payment.amount}` });
+  }
+  for (const project of candidates.overdueProjects) {
+    alerts.push({ title: 'Project deadline missed', description: project.project_name });
+  }
+  for (const sub of candidates.expiringSubscriptions) {
+    alerts.push({
+      title: 'Subscription expiring soon',
+      description: `${sub.plan_name} — renews ${sub.renewal_date.toISOString().slice(0, 10)}`,
+    });
+  }
+  if (candidates.pendingSalaries > 0) {
+    alerts.push({
+      title: 'Salaries pending',
+      description: `${candidates.pendingSalaries} record(s) awaiting payment`,
+    });
+  }
+  for (const r of candidates.largeReimbursements) {
+    alerts.push({
+      title: 'Large reimbursement pending',
+      description: `${r.expense_title} — ${r.amount}`,
+    });
+  }
+
+  return alerts;
 }
 
 export function buildReminderDigest(reminders: IReminder[]): ReminderDigestPayload {
@@ -77,87 +153,112 @@ export function buildReminderDigest(reminders: IReminder[]): ReminderDigestPaylo
     low: reminders.filter((r) => r.priority === 'low').length,
   };
 
-  return { overdue, dueToday, upcoming, summary };
+  return { alerts: [] as DigestAlertItem[], overdue, dueToday, upcoming, summary };
+}
+
+function formatAlertSection(alerts: DigestAlertItem[]): string {
+  if (alerts.length === 0) return '';
+  const lines = alerts.map((a) => `• ${a.title}: ${a.description}`);
+  return `---\n\nALERTS\n\n${lines.join('\n')}\n`;
 }
 
 function formatSection(title: string, items: DigestReminderItem[]): string {
-  const lines = items.map((item) => `• ${item.title}\n• ${item.dueDate}\n• ${item.module}`);
+  const lines = items.map((item) => `• ${item.title}\n  ${item.dueDate}\n  ${item.module}`);
   return `---\n\n${title}\n\n${lines.length ? lines.join('\n\n') : '(none)'}\n`;
 }
 
 export function formatDigestEmailBody(digest: ReminderDigestPayload): string {
-  const { summary } = digest;
-  return [
+  const { summary, alerts } = digest;
+  const hasReminders = summary.total > 0;
+  const hasAlerts = alerts.length > 0;
+
+  if (!hasReminders && !hasAlerts) return '';
+
+  const parts: string[] = [
     'Good Morning,',
     '',
-    `You currently have ${summary.total} active reminders.`,
-    '',
-    formatSection('OVERDUE', digest.overdue),
-    formatSection('DUE TODAY', digest.dueToday),
-    formatSection('UPCOMING', digest.upcoming),
-    '---',
-    '',
-    'Summary',
-    '',
-    `Critical: ${summary.critical}`,
-    `High: ${summary.high}`,
-    `Medium: ${summary.medium}`,
-    `Low: ${summary.low}`,
-    '',
-    'Login to Kajkarma to review and take action.',
-  ].join('\n');
+  ];
+
+  if (hasAlerts) {
+    parts.push(`You have ${alerts.length} alert${alerts.length === 1 ? '' : 's'} requiring attention.`);
+  }
+  if (hasReminders) {
+    parts.push(`You have ${summary.total} active reminder${summary.total === 1 ? '' : 's'}.`);
+  }
+
+  parts.push('');
+
+  if (hasAlerts) parts.push(formatAlertSection(alerts));
+  if (hasReminders) {
+    parts.push(formatSection('OVERDUE', digest.overdue));
+    parts.push(formatSection('DUE TODAY', digest.dueToday));
+    parts.push(formatSection('UPCOMING', digest.upcoming));
+    parts.push('---');
+    parts.push('');
+    parts.push('Summary');
+    parts.push('');
+    parts.push(`Critical: ${summary.critical}`);
+    parts.push(`High:     ${summary.high}`);
+    parts.push(`Medium:   ${summary.medium}`);
+    parts.push(`Low:      ${summary.low}`);
+    parts.push('');
+  }
+
+  parts.push('Login to Kajkarma to review and take action.');
+  return parts.join('\n');
 }
 
-async function resolveDigestRecipientUserId(): Promise<Types.ObjectId | null> {
-  const email = env.DAILY_REMINDER_DIGEST_EMAIL?.trim().toLowerCase();
-  if (!email) return null;
-
-  const user = await findUserByEmail(email);
-  if (user?._id) return user._id as Types.ObjectId;
-
-  const fallback = await findUserByEmail(env.SUPER_ADMIN_EMAIL);
-  return (fallback?._id as Types.ObjectId) ?? null;
-}
-
-export async function getDigestPreview(): Promise<ReminderDigestPayload> {
-  const reminders = await fetchActiveRemindersForDigest();
-  return buildReminderDigest(reminders);
+export async function getDigestPreview(user: JwtPayload): Promise<ReminderDigestPayload> {
+  const scope = reminderMyScope(user);
+  const [reminders, alerts] = await Promise.all([
+    fetchActiveRemindersForDigest(scope),
+    buildDigestAlerts(user),
+  ]);
+  return { ...buildReminderDigest(reminders), alerts };
 }
 
 export async function runDailyReminderDigest(): Promise<void> {
-  const recipient = env.DAILY_REMINDER_DIGEST_EMAIL?.trim();
-  if (!recipient) {
-    logger.warn('Daily reminder digest skipped: DAILY_REMINDER_DIGEST_EMAIL not set');
-    return;
-  }
-
-  const userId = await resolveDigestRecipientUserId();
-  if (!userId) {
-    logger.warn('Daily reminder digest skipped: no user found for digest log');
+  if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASSWORD) {
+    logger.warn('Daily digest email skipped: SMTP not configured');
     return;
   }
 
   const digestDate = getIstDateKey();
-  if (await digestAlreadySent(userId, digestDate)) {
-    logger.info(`Daily reminder digest already sent for ${digestDate}`);
-    return;
+  const users = await findAllActiveUsersWithRoles();
+
+  let sentCount = 0;
+
+  for (const user of users) {
+    const userId = user._id as Types.ObjectId;
+
+    if (await digestAlreadySent(userId, digestDate)) continue;
+
+    const fakePayload: JwtPayload = {
+      userId: userId.toString(),
+      roleId: user.roleId,
+      roleName: user.roleName,
+    };
+
+    const scope = reminderMyScope(fakePayload);
+    const [reminders, alerts] = await Promise.all([
+      fetchActiveRemindersForDigest(scope),
+      buildDigestAlerts(fakePayload),
+    ]);
+
+    if (reminders.length === 0 && alerts.length === 0) continue;
+
+    const digest: ReminderDigestPayload = { ...buildReminderDigest(reminders), alerts };
+    const body = formatDigestEmailBody(digest);
+
+    const sent = await sendPlainEmail(user.email, 'Kajkarma Daily Reminder Digest', body);
+    if (sent) {
+      await recordDigestSent(userId, digestDate);
+      sentCount++;
+      logger.info(
+        `Digest sent to ${user.email} (${user.roleName}) — ${reminders.length} reminders, ${alerts.length} alerts`
+      );
+    }
   }
 
-  const reminders = await fetchActiveRemindersForDigest();
-  if (reminders.length === 0) {
-    logger.info('Daily reminder digest skipped: zero active reminders');
-    return;
-  }
-
-  const digest = buildReminderDigest(reminders);
-  const body = formatDigestEmailBody(digest);
-
-  const sent = await sendPlainEmail(recipient, 'Kajkarma Daily Reminder Digest', body);
-  if (!sent) {
-    logger.warn('Daily reminder digest not logged: email was not sent');
-    return;
-  }
-
-  await recordDigestSent(userId, digestDate);
-  logger.info(`Daily reminder digest sent to ${recipient} (${digest.summary.total} reminders)`);
+  logger.info(`Daily reminder digest complete: sent to ${sentCount}/${users.length} users`);
 }
