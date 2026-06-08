@@ -11,6 +11,7 @@ import {
   isEmployeeAssignedToProject,
 } from '../repositories/project.repository.js';
 import { findEmployeeById, findEmployeeByUserId } from '../repositories/employee.repository.js';
+import { findAttendanceByEmployeeAndDate } from '../repositories/attendance.repository.js';
 import { findRoleById } from '../repositories/role.repository.js';
 import { findAccessControl } from '../repositories/user.repository.js';
 import { AppError } from '../utils/AppError.js';
@@ -120,7 +121,6 @@ export async function createNewWorklog(
     project_id: string;
     task_title: string;
     task_description?: string;
-    time_spent_hours: number;
     work_status?: string;
     remarks?: string;
   },
@@ -138,6 +138,11 @@ export async function createNewWorklog(
     throw new AppError('Employee is not assigned to this project', 422);
   }
 
+  const now = new Date();
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const attendance = await findAttendanceByEmployeeAndDate(employeeId, today);
+  const isCheckedIn = attendance?.is_checked_in ?? false;
+
   const worklog = await createWorklog(
     omitUndefined({
       employee_id: toObjectId(employeeId),
@@ -145,9 +150,11 @@ export async function createNewWorklog(
       project_id: toObjectId(data.project_id),
       task_title: data.task_title,
       task_description: data.task_description,
-      time_spent_hours: data.time_spent_hours,
       work_status: (data.work_status ?? 'in_progress') as IWorklog['work_status'],
       remarks: data.remarks,
+      started_at: now,
+      // If not checked in, start paused so no time accrues until the next check-in
+      last_paused_at: isCheckedIn ? undefined : now,
     }) as Partial<IWorklog>
   );
 
@@ -170,9 +177,29 @@ export async function updateWorklog(
     throw new AppError('Project not found', 404);
   }
 
-  const updatePayload: Partial<IWorklog> = { ...data };
+  const updatePayload: Partial<IWorklog> & { last_paused_at?: Date | null } = { ...data };
   if (data.project_id) {
     updatePayload.project_id = toObjectId(data.project_id.toString());
+  }
+
+  if (data.work_status === 'completed' && existing.work_status !== 'completed') {
+    const completedAt = new Date();
+    let totalPausedMinutes = existing.paused_duration_minutes ?? 0;
+
+    if (existing.last_paused_at) {
+      totalPausedMinutes += Math.round(
+        (completedAt.getTime() - new Date(existing.last_paused_at).getTime()) / 60000
+      );
+    }
+
+    const startedAt = new Date(existing.started_at);
+    const elapsedMs = completedAt.getTime() - startedAt.getTime() - totalPausedMinutes * 60000;
+    const timeSpentHours = Math.max(0, Math.round(elapsedMs / 36000) / 100);
+
+    updatePayload.completed_at = completedAt;
+    updatePayload.paused_duration_minutes = totalPausedMinutes;
+    updatePayload.last_paused_at = null;
+    updatePayload.time_spent_hours = timeSpentHours;
   }
 
   const updated = await updateWorklogById(id, updatePayload);

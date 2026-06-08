@@ -71,6 +71,54 @@ export async function deleteWorklogById(id: string | Types.ObjectId): Promise<IW
   return Worklog.findByIdAndDelete(id).lean();
 }
 
+/**
+ * Set last_paused_at on all in-progress, currently-running worklogs for an employee.
+ * Called when the employee checks out.
+ */
+export async function pauseWorklogsForEmployee(
+  employeeId: string | Types.ObjectId,
+  pausedAt: Date
+): Promise<void> {
+  await Worklog.updateMany(
+    { employee_id: employeeId, work_status: 'in_progress', last_paused_at: null },
+    { $set: { last_paused_at: pausedAt } }
+  );
+}
+
+/**
+ * Accumulate pause duration and clear last_paused_at on all paused worklogs for an employee.
+ * Called when the employee checks in.
+ */
+export async function resumeWorklogsForEmployee(
+  employeeId: string | Types.ObjectId,
+  resumedAt: Date
+): Promise<void> {
+  const paused = await Worklog.find({
+    employee_id: employeeId,
+    work_status: 'in_progress',
+    last_paused_at: { $ne: null },
+  }).select('last_paused_at').lean();
+
+  if (paused.length === 0) return;
+
+  const ops = paused.map((wl) => {
+    const pausedMinutes = Math.round(
+      (resumedAt.getTime() - new Date(wl.last_paused_at!).getTime()) / 60000
+    );
+    return {
+      updateOne: {
+        filter: { _id: wl._id },
+        update: {
+          $inc: { paused_duration_minutes: pausedMinutes },
+          $set: { last_paused_at: null },
+        },
+      },
+    };
+  });
+
+  await Worklog.bulkWrite(ops);
+}
+
 export interface GroupedWorklogFilters {
   employee_id?: string;
   work_status?: string;

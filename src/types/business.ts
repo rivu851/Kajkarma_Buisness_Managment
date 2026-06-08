@@ -144,6 +144,10 @@ export interface IWorklog {
   time_spent_hours: number;
   work_status: WorkStatus;
   remarks?: string;
+  started_at: Date;
+  completed_at?: Date | null;
+  paused_duration_minutes: number;
+  last_paused_at?: Date | null;
   created_at: Date;
   updated_at: Date;
 }

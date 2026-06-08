@@ -6,6 +6,7 @@ import {
   pushCheckInSession,
   closeLatestSession,
 } from '../repositories/attendance.repository.js';
+import { pauseWorklogsForEmployee, resumeWorklogsForEmployee } from '../repositories/worklog.repository.js';
 import { findEmployeeByUserId } from '../repositories/employee.repository.js';
 import { AppError } from '../utils/AppError.js';
 import { omitUndefined } from '../utils/omitUndefined.js';
@@ -48,7 +49,9 @@ export async function checkIn(user: JwtPayload): Promise<IAttendance> {
     throw new AppError('You are already checked in. Please check out first.', 409);
   }
 
-  const updated = await pushCheckInSession(attendance._id, new Date());
+  const checkInTime = new Date();
+  await resumeWorklogsForEmployee(employeeId, checkInTime);
+  const updated = await pushCheckInSession(attendance._id, checkInTime);
   if (!updated) throw new AppError('Failed to record check-in', 500);
   return updated;
 }
@@ -73,6 +76,7 @@ export async function checkOut(user: JwtPayload): Promise<IAttendance> {
     (checkOutTime.getTime() - new Date(openSession.check_in).getTime()) / 60000
   );
 
+  await pauseWorklogsForEmployee(employeeId, checkOutTime);
   const updated = await closeLatestSession(attendance._id, checkOutTime, durationMinutes);
   if (!updated) throw new AppError('Failed to record check-out', 500);
   return updated;
