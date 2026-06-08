@@ -5,6 +5,7 @@ import {
   createWorklog,
   updateWorklogHandler,
   deleteWorklog,
+  getGroupedWorklogs,
 } from '../controllers/worklog.controller.js';
 import { authenticate } from '../middlewares/auth.middleware.js';
 import { requirePermission } from '../middlewares/permission.middleware.js';
@@ -13,6 +14,7 @@ import {
   listWorklogsSchema,
   createWorklogSchema,
   updateWorklogSchema,
+  listGroupedWorklogsSchema,
 } from '../validations/worklog.validation.js';
 
 const router = Router();
@@ -20,6 +22,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/', requirePermission('worklogs', 'read'), validate(listWorklogsSchema), getWorklogs);
+router.get('/grouped', requirePermission('worklogs', 'read'), validate(listGroupedWorklogsSchema), getGroupedWorklogs);
 router.post('/', requirePermission('worklogs', 'create'), validate(createWorklogSchema), createWorklog);
 router.get('/:id', requirePermission('worklogs', 'read'), getWorklog);
 router.patch(

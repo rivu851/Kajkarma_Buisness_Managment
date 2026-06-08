@@ -10,6 +10,8 @@ import { Report } from '../models/report.model.js';
 import { Employee } from '../models/employee.model.js';
 import { findRoleByName } from '../repositories/role.repository.js';
 import { findUsersByRoleId } from '../repositories/user.repository.js';
+import { findSalaryByEmployeeAndPeriod, createSalary } from '../repositories/salary.repository.js';
+import type { ISalary } from '../types/business.js';
 import { SYSTEM_ROLES } from '../constants/roles.js';
 import { startOfDay, endOfMonth, monthKey } from '../utils/dateRanges.js';
 import { toObjectId } from '../utils/recordScope.js';
@@ -22,12 +24,13 @@ import {
 import {
   cancelOrphanRemindersForModule,
   cancelReminderByDedupKey,
+  cancelRemindersByDedupKeyPattern,
 } from '../repositories/reminder.repository.js';
 import type { ReminderPriority } from '../constants/enums.js';
 
 async function financeAndAdminUserIds(): Promise<Types.ObjectId[]> {
   const ids: Types.ObjectId[] = [];
-  for (const roleName of [SYSTEM_ROLES.FINANCE, SYSTEM_ROLES.SUPER_ADMIN]) {
+  for (const roleName of [SYSTEM_ROLES.HR, SYSTEM_ROLES.FINANCE, SYSTEM_ROLES.ADMIN, SYSTEM_ROLES.SUPER_ADMIN]) {
     const role = await findRoleByName(roleName);
     if (!role) continue;
     const users = await findUsersByRoleId(role._id);
@@ -94,6 +97,15 @@ function resolveSubscriptionAssignee(
   return createdBy;
 }
 
+// OLD dedup_key format included a trailing date segment (e.g. `lead_followup|leads|<id>|2026-06-01`).
+// These are replaced by stable per-entity keys. Cancel any survivors so they stop appearing.
+async function cancelLegacyDateKeyedReminders(): Promise<void> {
+  await Promise.all([
+    cancelRemindersByDedupKeyPattern(/^lead_followup\|leads\|[0-9a-fA-F]{24}\|/),
+    cancelRemindersByDedupKeyPattern(/^communication_followup\|communications\|[0-9a-fA-F]{24}\|/),
+  ]);
+}
+
 async function cancelStaleSourceReminders(): Promise<void> {
   const [closedLeads, closedPayments, closedProjects, closedSubs, activeComms] = await Promise.all([
     Lead.find({ stage: { $in: ['won', 'lost'] } }).select('_id').lean(),
@@ -129,10 +141,9 @@ export async function syncLeadReminders(): Promise<void> {
 
   for (const lead of leads) {
     if (!lead.follow_up_date || !lead.assigned_user_id) continue;
-    const dateKey = startOfDay(lead.follow_up_date).toISOString().slice(0, 10);
     const overdue = lead.follow_up_date < today;
     await upsertAutoReminder({
-      dedup_key: `lead_followup|leads|${lead._id}|${dateKey}`,
+      dedup_key: `lead_followup|leads|${lead._id}`,
       type: 'lead_followup',
       title: 'Lead Follow Up Required',
       description: `Follow up with ${lead.lead_name}`,
@@ -202,11 +213,23 @@ export async function syncProjectReminders(): Promise<void> {
 }
 
 export async function syncPaymentReminders(): Promise<void> {
-  const payments = await UpcomingPayment.find({
+  type PaymentWithClient = {
+    _id: Types.ObjectId;
+    amount: number;
+    due_date: Date;
+    reminder_date?: Date;
+    payment_status: string;
+    assigned_follow_up_user?: Types.ObjectId;
+    created_by?: Types.ObjectId;
+    client_id?: Types.ObjectId | { _id: Types.ObjectId; company_name: string };
+  };
+
+  const payments = (await UpcomingPayment.find({
     payment_status: { $in: ['pending', 'overdue'] },
   })
-    .select('amount due_date reminder_date assigned_follow_up_user created_by client_id')
-    .lean();
+    .select('amount due_date reminder_date assigned_follow_up_user created_by client_id payment_status')
+    .populate('client_id', 'company_name')
+    .lean()) as PaymentWithClient[];
 
   const today = startOfDay();
 
@@ -216,12 +239,16 @@ export async function syncPaymentReminders(): Promise<void> {
 
     const reminderDate = p.reminder_date ?? p.due_date;
     const overdue = p.due_date < today || p.payment_status === 'overdue';
+    const clientName =
+      p.client_id && typeof p.client_id === 'object' && 'company_name' in p.client_id
+        ? (p.client_id as { company_name: string }).company_name
+        : 'Client';
 
     await upsertAutoReminder({
       dedup_key: `client_payment|upcoming-payments|${p._id}|main`,
       type: 'client_payment',
       title: overdue ? 'Client payment overdue' : 'Client payment follow-up',
-      description: `Outstanding payment of ${p.amount}`,
+      description: `${clientName} – outstanding payment of ${p.amount}`,
       priority: overdue ? 'critical' : 'high',
       related_module: 'upcoming-payments',
       related_record_id: p._id as Types.ObjectId,
@@ -291,7 +318,13 @@ export async function syncSalaryReminders(): Promise<void> {
 
   if (now.getTime() <= deadline.getTime()) return;
 
-  const pending = await Salary.find({ status: 'pending' }).select('month year net_salary').lean();
+  const currentMonth = now.getUTCMonth() + 1; // 1-12
+  const currentYear = now.getUTCFullYear();
+  // Only count salaries from previous months — current month is handled by autoGenerateSalaryEntries
+  const pending = await Salary.find({
+    status: 'pending',
+    $or: [{ year: { $lt: currentYear } }, { year: currentYear, month: { $lt: currentMonth } }],
+  }).select('month year net_salary').lean();
   if (pending.length === 0) return;
 
   const assignees = await financeAndAdminUserIds();
@@ -307,6 +340,95 @@ export async function syncSalaryReminders(): Promise<void> {
       reminder_date: startOfDay(now),
       created_by: userId,
     });
+  }
+}
+
+export async function autoGenerateSalaryEntries(): Promise<void> {
+  const now = new Date();
+  const todayYear = now.getUTCFullYear();
+  const todayMonth = now.getUTCMonth(); // 0-indexed
+  const todayDay = now.getUTCDate();
+  const todayMs = Date.UTC(todayYear, todayMonth, todayDay);
+  const MS_PER_DAY = 86_400_000;
+
+  const employees = await Employee.find({
+    status: 'active',
+    salary: { $gt: 0 },
+  }).lean();
+
+  if (employees.length === 0) return;
+
+  const assignees = await financeAndAdminUserIds();
+
+  for (const emp of employees) {
+    // Use explicit salary_day if set, otherwise fall back to the day of joining_date
+    const rawDay = emp.salary_day ?? new Date(emp.joining_date).getUTCDate();
+    const salaryDay = Math.min(rawDay, 28); // cap at 28 so Feb is always valid
+    const baseSalary = emp.salary!;
+
+    // Find the next upcoming occurrence of salary_day (this month or next)
+    const lastDayThisMonth = new Date(Date.UTC(todayYear, todayMonth + 1, 0)).getUTCDate();
+    const actualDayThisMonth = Math.min(salaryDay, lastDayThisMonth);
+    const salaryDateThisMonthMs = Date.UTC(todayYear, todayMonth, actualDayThisMonth);
+
+    let salaryDateMs: number;
+    let targetMonth: number; // 1-12
+    let targetYear: number;
+
+    if (salaryDateThisMonthMs >= todayMs) {
+      salaryDateMs = salaryDateThisMonthMs;
+      targetMonth = todayMonth + 1;
+      targetYear = todayYear;
+    } else {
+      const nextMonthIndex = (todayMonth + 1) % 12;
+      const nextMonthYear = todayMonth === 11 ? todayYear + 1 : todayYear;
+      const lastDayNextMonth = new Date(Date.UTC(nextMonthYear, nextMonthIndex + 1, 0)).getUTCDate();
+      salaryDateMs = Date.UTC(nextMonthYear, nextMonthIndex, Math.min(salaryDay, lastDayNextMonth));
+      targetMonth = nextMonthIndex + 1;
+      targetYear = nextMonthYear;
+    }
+
+    const diffDays = Math.floor((salaryDateMs - todayMs) / MS_PER_DAY);
+    if (diffDays < 0 || diffDays > 3) continue;
+
+    // Auto-create salary entry if one doesn't already exist for this period
+    const existing = await findSalaryByEmployeeAndPeriod(emp._id, targetMonth, targetYear);
+    let salaryId: Types.ObjectId;
+    if (!existing) {
+      const created = await createSalary({
+        employee_id: emp._id,
+        month: targetMonth,
+        year: targetYear,
+        base_salary: baseSalary,
+        bonus: 0,
+        deductions: 0,
+        net_salary: baseSalary,
+        status: 'pending',
+      } as Partial<ISalary>);
+      salaryId = created._id as Types.ObjectId;
+    } else {
+      salaryId = existing._id as Types.ObjectId;
+    }
+
+    // Remind HR / Finance / Admin / Super Admin
+    // Use salary._id as related_record_id so reminders can be closed when salary is paid
+    const salaryDateStr = new Date(salaryDateMs).toISOString().slice(0, 10);
+    const priority = diffDays <= 1 ? 'critical' : 'high';
+    const monthLabel = `${targetYear}-${String(targetMonth).padStart(2, '0')}`;
+    for (const userId of assignees) {
+      await upsertAutoReminder({
+        dedup_key: `salary_upcoming|salary|${emp._id}|${monthLabel}|${userId}`,
+        type: 'salary_due',
+        title: `Salary due: ${emp.full_name}`,
+        description: `₹${baseSalary} due on ${salaryDateStr}`,
+        priority,
+        related_module: 'salary',
+        related_record_id: salaryId,
+        assigned_user_id: userId,
+        reminder_date: new Date(salaryDateMs),
+        created_by: userId,
+      });
+    }
   }
 }
 
@@ -378,9 +500,8 @@ export async function syncCommunicationReminders(): Promise<void> {
 
   for (const c of comms) {
     if (!c.next_follow_up_date || !c.user_id) continue;
-    const dateKey = startOfDay(c.next_follow_up_date).toISOString().slice(0, 10);
     await upsertAutoReminder({
-      dedup_key: `communication_followup|communications|${c._id}|${dateKey}`,
+      dedup_key: `communication_followup|communications|${c._id}`,
       type: 'communication_followup',
       title: 'Communication follow-up due',
       description: `Follow up on ${c.entity_type} communication`,
@@ -438,6 +559,54 @@ export async function syncReportUploadReminders(): Promise<void> {
   }
 }
 
+/** Sync reminders for a single project immediately (called from project.service on update/delete). */
+export async function syncProjectRemindersForOne(projectId: Types.ObjectId): Promise<void> {
+  const project = await Project.findById(projectId)
+    .select('project_name end_date status created_by assigned_employees')
+    .lean();
+
+  if (!project || !project.end_date || ['completed', 'cancelled'].includes(project.status)) {
+    const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+    await closePendingRemindersForRecord('projects', projectId);
+    return;
+  }
+
+  const today = startOfDay();
+  const end = startOfDay(project.end_date);
+  const daysLeft = Math.round((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (daysLeft > 7) return;
+
+  let title: string;
+  let priority: ReminderPriority;
+  if (daysLeft < 0) { title = 'Project deadline missed'; priority = 'critical'; }
+  else if (daysLeft === 0) { title = 'Project deadline is today'; priority = 'critical'; }
+  else {
+    title = `Project deadline in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`;
+    priority = daysLeft <= 3 ? 'high' : 'medium';
+  }
+
+  await cancelReminderByDedupKey(`project_deadline|projects|${projectId}|main`);
+
+  const userIds = await resolveAllProjectUserIds(project);
+  if (userIds.length === 0) return;
+
+  for (const userId of userIds) {
+    await upsertAutoReminder({
+      dedup_key: `project_deadline|projects|${projectId}|${userId}`,
+      type: 'project_deadline',
+      title,
+      description: `${project.project_name} ends on ${end.toISOString().slice(0, 10)}`,
+      priority,
+      related_module: 'projects',
+      related_record_id: projectId,
+      assigned_user_id: userId,
+      reminder_date: end,
+      created_by: (project.created_by ?? userId) as Types.ObjectId,
+    });
+  }
+}
+
 export async function runScheduledReminderSync(): Promise<void> {
   await Promise.all([
     syncLeadReminders(),
@@ -445,11 +614,13 @@ export async function runScheduledReminderSync(): Promise<void> {
     syncPaymentReminders(),
     syncSubscriptionReminders(),
     syncSalaryReminders(),
+    autoGenerateSalaryEntries(),
     syncReimbursementReminders(),
     syncCommunicationReminders(),
     syncReportUploadReminders(),
   ]);
   await cancelStaleSourceReminders();
+  await cancelLegacyDateKeyedReminders();
   await wakeSnoozedReminders();
   await escalateOverdueReminders();
 }

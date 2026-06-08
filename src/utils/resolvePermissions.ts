@@ -38,6 +38,7 @@ export function isTeamDashboardRole(roleName: string): boolean {
 export function canViewSalaryMetrics(roleName: string): boolean {
   return (
     roleName === SYSTEM_ROLES.SUPER_ADMIN ||
+    roleName === SYSTEM_ROLES.ADMIN ||
     roleName === SYSTEM_ROLES.HR ||
     roleName === SYSTEM_ROLES.FINANCE
   );

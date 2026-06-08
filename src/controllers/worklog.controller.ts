@@ -39,3 +39,14 @@ export const deleteWorklog: RequestHandler = asyncHandler(async (req, res: Respo
   await worklogService.removeWorklog(param(req, 'id'), req.user!);
   sendSuccess(res, null, 'Work log deleted');
 });
+
+export const getGroupedWorklogs: RequestHandler = asyncHandler(async (req, res: Response) => {
+  const q = (res.locals['query'] ?? req.query) as Record<string, string | undefined>;
+  const result = await worklogService.listWorklogsGrouped(req.user!, {
+    ...(q.employee_id ? { employee_id: String(q.employee_id) } : {}),
+    ...(q.work_status ? { work_status: String(q.work_status) } : {}),
+    ...(q.date_from ? { date_from: new Date(String(q.date_from)) } : {}),
+    ...(q.date_to ? { date_to: new Date(String(q.date_to)) } : {}),
+  });
+  sendSuccess(res, { data: result, total_projects: result.length }, 'Work logs grouped by project');
+});

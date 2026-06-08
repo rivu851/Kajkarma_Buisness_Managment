@@ -118,6 +118,10 @@ export async function markSalaryPaid(
     ...(data.notes ? { notes: data.notes } : {}),
   });
   if (!updated) throw new AppError('Salary record not found', 404);
+
+  const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+  void closePendingRemindersForRecord('salary', toObjectId(id)).catch(() => undefined);
+
   return updated;
 }
 
@@ -126,4 +130,6 @@ export async function removeSalary(id: string): Promise<void> {
   if (!existing) throw new AppError('Salary record not found', 404);
   if (existing.status === 'paid') throw new AppError('Cannot delete a paid salary entry', 422);
   await deleteSalaryById(id);
+  const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+  void closePendingRemindersForRecord('salary', toObjectId(id)).catch(() => undefined);
 }

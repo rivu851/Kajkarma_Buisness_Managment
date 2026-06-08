@@ -13,6 +13,7 @@ const employeeSchema = new Schema<IEmployee>(
     role_designation: { type: String, required: true, trim: true },
     joining_date: { type: Date, required: true },
     salary: { type: Number, min: 0 },
+    salary_day: { type: Number, min: 1, max: 28 },
     pending_salary: { type: Number, default: 0, min: 0 },
     bank_account_holder: { type: String },
     bank_name: { type: String },

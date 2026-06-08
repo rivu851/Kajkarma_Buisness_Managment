@@ -1,7 +1,7 @@
 import { UpcomingPayment } from '../models/upcoming_payment.model.js';
 import type { IUpcomingPayment } from '../types/business.js';
 import type { PaginatedResult } from '../types/index.js';
-import type { Types } from 'mongoose';
+import { Types } from 'mongoose';
 
 export interface UpcomingPaymentListFilters {
   client_id?: string;
@@ -104,4 +104,15 @@ export async function deleteUpcomingPaymentsByRevenueId(
     payment_status: { $ne: 'received' },
   });
   return result.deletedCount ?? 0;
+}
+
+export async function sumReceivedAmountByRevenueId(
+  revenueId: string | Types.ObjectId
+): Promise<number> {
+  const id = typeof revenueId === 'string' ? new Types.ObjectId(revenueId) : revenueId;
+  const result = await UpcomingPayment.aggregate<{ total: number }>([
+    { $match: { revenue_id: id, payment_status: 'received' } },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  return result[0]?.total ?? 0;
 }

@@ -140,6 +140,9 @@ export async function updateProject(
       'projects',
       updated._id as import('mongoose').Types.ObjectId
     ).catch(() => undefined);
+  } else if (data.end_date !== undefined || data.assigned_employees !== undefined) {
+    const { syncProjectRemindersForOne } = await import('./reminder-sync.service.js');
+    void syncProjectRemindersForOne(updated._id as import('mongoose').Types.ObjectId).catch(() => undefined);
   }
   return updated;
 }
@@ -190,6 +193,8 @@ export async function assignProjectTeam(
     assigned_employees: employeeIds.map((eid) => toObjectId(eid)),
   });
   if (!updated) throw new AppError('Project not found', 404);
+  const { syncProjectRemindersForOne } = await import('./reminder-sync.service.js');
+  void syncProjectRemindersForOne(updated._id as import('mongoose').Types.ObjectId).catch(() => undefined);
   return updated;
 }
 
@@ -199,4 +204,9 @@ export async function removeProject(id: string, user: JwtPayload): Promise<void>
   await assertProjectRecordAccess(existing, user);
   const deleted = await deleteProjectById(id);
   if (!deleted) throw new AppError('Project not found', 404);
+  const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+  void closePendingRemindersForRecord(
+    'projects',
+    existing._id as import('mongoose').Types.ObjectId
+  ).catch(() => undefined);
 }

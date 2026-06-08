@@ -121,6 +121,7 @@ export interface IEmployee {
   role_designation: string;
   joining_date: Date;
   salary?: number;
+  salary_day?: number;
   pending_salary: number;
   bank_account_holder?: string;
   bank_name?: string;
@@ -145,6 +146,16 @@ export interface IWorklog {
   remarks?: string;
   created_at: Date;
   updated_at: Date;
+}
+
+export interface WorklogGroup {
+  project_id: Types.ObjectId;
+  project_name: string;
+  project_status: string;
+  client_id?: Types.ObjectId;
+  total_hours: number;
+  entries_count: number;
+  logs: IWorklog[];
 }
 
 export interface IRevenue {
@@ -260,6 +271,24 @@ export interface ISubscription {
   assigned_to?: string;
   notes?: string;
   created_by: Types.ObjectId;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface IAttendanceSession {
+  _id: Types.ObjectId;
+  check_in: Date;
+  check_out?: Date;
+  duration_minutes?: number;
+}
+
+export interface IAttendance {
+  _id: Types.ObjectId;
+  employee_id: Types.ObjectId;
+  date: Date;
+  sessions: IAttendanceSession[];
+  total_minutes: number;
+  is_checked_in: boolean;
   created_at: Date;
   updated_at: Date;
 }

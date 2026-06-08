@@ -5,6 +5,7 @@ import {
   updateUpcomingPaymentById,
   deleteUpcomingPaymentById,
   findOverdueUpcomingPayments,
+  sumReceivedAmountByRevenueId,
 } from '../repositories/upcoming_payment.repository.js';
 import { findClientById } from '../repositories/client.repository.js';
 import { findRevenueById, updateRevenueById } from '../repositories/revenue.repository.js';
@@ -90,6 +91,7 @@ export async function createUpcomingPaymentEntry(
       saved.amount,
       reminderDate,
       saved.due_date,
+      client.company_name,
       assignee as import('mongoose').Types.ObjectId,
       saved.created_by as import('mongoose').Types.ObjectId
     ).catch(() => undefined);
@@ -133,6 +135,25 @@ export async function updateUpcomingPaymentEntry(
 
   const updated = await updateUpcomingPaymentById(id, update);
   if (!updated) throw new AppError('Upcoming payment not found', 404);
+
+  if (data.amount !== undefined || data.due_date || data.reminder_date || data.assigned_follow_up_user) {
+    const assignee = (updated.assigned_follow_up_user ?? updated.created_by) as import('mongoose').Types.ObjectId | undefined;
+    if (assignee) {
+      const reminderDate = (updated.reminder_date ?? updated.due_date) as Date;
+      const client = await findClientById(String(existing.client_id));
+      const { onUpcomingPaymentCreated } = await import('./reminder.service.js');
+      void onUpcomingPaymentCreated(
+        updated._id as import('mongoose').Types.ObjectId,
+        updated.amount,
+        reminderDate,
+        updated.due_date,
+        client?.company_name ?? 'Client',
+        assignee,
+        updated.created_by as import('mongoose').Types.ObjectId
+      ).catch(() => undefined);
+    }
+  }
+
   return updated;
 }
 
@@ -161,7 +182,7 @@ export async function markUpcomingPaymentReceived(
   if (existing.revenue_id) {
     const revenueId = (existing.revenue_id as unknown as { _id: import('mongoose').Types.ObjectId })._id
       ?? existing.revenue_id;
-    await syncLinkedRevenue(revenueId.toString(), existing.amount);
+    await syncLinkedRevenue(revenueId.toString());
   }
 
   const saved = (await findUpcomingPaymentById(id))!;
@@ -219,13 +240,18 @@ export async function removeUpcomingPayment(id: string): Promise<void> {
   }
 
   await deleteUpcomingPaymentById(id);
+  const { closePendingRemindersForRecord } = await import('./reminder.service.js');
+  void closePendingRemindersForRecord(
+    'upcoming-payments',
+    existing._id as import('mongoose').Types.ObjectId
+  ).catch(() => undefined);
 }
 
-async function syncLinkedRevenue(revenueId: string, receivedAmount: number): Promise<void> {
+async function syncLinkedRevenue(revenueId: string): Promise<void> {
   const revenue = await findRevenueById(revenueId);
   if (!revenue) return;
 
-  const newReceived = (revenue.received_amount ?? 0) + receivedAmount;
-  const status = computeRevenueStatus(revenue.amount, newReceived);
-  await updateRevenueById(revenueId, { received_amount: newReceived, status });
+  const totalReceived = await sumReceivedAmountByRevenueId(revenueId);
+  const status = computeRevenueStatus(revenue.amount, totalReceived);
+  await updateRevenueById(revenueId, { received_amount: totalReceived, status });
 }

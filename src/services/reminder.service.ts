@@ -348,12 +348,9 @@ export async function onLeadFollowUpChanged(
   assignedUserId: Types.ObjectId,
   createdBy: Types.ObjectId
 ): Promise<void> {
-  await cancelActiveLeadFollowUpReminders(leadId);
-
-  const dateKey = startOfDay(followUpDate).toISOString().slice(0, 10);
   const overdue = followUpDate < startOfDay();
   await upsertAutoReminder({
-    dedup_key: `lead_followup|leads|${leadId}|${dateKey}`,
+    dedup_key: `lead_followup|leads|${leadId}`,
     type: 'lead_followup',
     title: 'Lead Follow Up Required',
     description: `Follow up with ${leadName}`,
@@ -371,6 +368,7 @@ export async function onUpcomingPaymentCreated(
   amount: number,
   reminderDate: Date,
   dueDate: Date,
+  clientName: string,
   assigneeId: Types.ObjectId,
   createdBy: Types.ObjectId
 ): Promise<void> {
@@ -379,7 +377,7 @@ export async function onUpcomingPaymentCreated(
     dedup_key: `client_payment|upcoming-payments|${paymentId}|main`,
     type: 'client_payment',
     title: overdue ? 'Client payment overdue' : 'Client payment follow-up',
-    description: `Outstanding payment of ${amount}`,
+    description: `${clientName} – outstanding payment of ${amount}`,
     priority: overdue ? 'critical' : 'high',
     related_module: 'upcoming-payments',
     related_record_id: paymentId,
@@ -434,10 +432,8 @@ export async function onCommunicationFollowUp(
   followUpDate: Date,
   userId: Types.ObjectId
 ): Promise<void> {
-  await cancelActiveCommunicationFollowUpReminders(commId);
-  const dateKey = startOfDay(followUpDate).toISOString().slice(0, 10);
   await upsertAutoReminder({
-    dedup_key: `communication_followup|communications|${commId}|${dateKey}`,
+    dedup_key: `communication_followup|communications|${commId}`,
     type: 'communication_followup',
     title: 'Communication follow-up due',
     description: 'Follow up on communication',

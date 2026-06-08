@@ -202,6 +202,18 @@ export async function cancelReminderByDedupKey(dedupKey: string): Promise<void> 
   );
 }
 
+/** Cancel active reminders whose dedup_key matches the given regex (used for legacy key format cleanup). */
+export async function cancelRemindersByDedupKeyPattern(pattern: RegExp): Promise<void> {
+  await Reminder.updateMany(
+    {
+      dedup_key: { $regex: pattern },
+      status: { $in: ACTIVE_REMINDER_STATUSES },
+      deleted_at: { $exists: false },
+    },
+    { $set: { status: 'cancelled' as ReminderStatus }, $unset: { dedup_key: '' } }
+  );
+}
+
 /** Cancel active reminders for a module whose related_record_id is no longer in existingIds. */
 export async function cancelOrphanRemindersForModule(
   relatedModule: ReminderModule,

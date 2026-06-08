@@ -37,3 +37,12 @@ export const updateWorklogSchema = z.object({
     remarks: z.string().optional(),
   }),
 });
+
+export const listGroupedWorklogsSchema = z.object({
+  query: z.object({
+    employee_id: objectIdSchema.optional(),
+    work_status: z.enum(WORK_STATUSES).optional(),
+    date_from: z.coerce.date().optional(),
+    date_to: z.coerce.date().optional(),
+  }),
+});

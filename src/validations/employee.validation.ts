@@ -36,6 +36,7 @@ export const createEmployeeSchema = z.object({
       role_designation: z.string().min(1, 'Designation is required'),
       joining_date: z.coerce.date(),
       salary: z.number().min(0).optional(),
+      salary_day: z.number().int().min(1).max(28).optional(),
       pending_salary: z.number().min(0).optional(),
       status: z.enum(EMPLOYEE_STATUSES).optional(),
       create_user_account: createUserAccountSchema.optional(),
@@ -56,6 +57,7 @@ export const updateEmployeeSchema = z.object({
       role_designation: z.string().optional(),
       joining_date: z.coerce.date().optional(),
       salary: z.number().min(0).nullable().optional(),
+      salary_day: z.number().int().min(1).max(28).nullable().optional(),
       pending_salary: z.number().min(0).optional(),
       status: z.enum(EMPLOYEE_STATUSES).optional(),
     })
